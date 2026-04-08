@@ -101,10 +101,38 @@ function setProgress(msg) {
   if (msg) node.appendChild(el('div', {}, msg));
 }
 
+// Scan result cache — keyed on wallet address. Protects against rapid
+// rescans that would otherwise hammer rate-limited RPCs and cause chunk
+// failures. TTL is short enough that balance reads stay fresh but long
+// enough to cover user double-clicks and accidental re-scans.
+const SCAN_CACHE_TTL_MS = 30_000;
+// Minimum time between scan button clicks, regardless of cache state.
+const SCAN_COOLDOWN_MS = 2_000;
+const _scanCache = new Map(); // address → { scans, ts }
+let _lastScanStarted = 0;
+
 async function runScan() {
   const addr = getAddress();
   if (!addr) {
     setWalletStatus('Load a wallet first', 'error');
+    return;
+  }
+
+  // ===== Cooldown: prevent rapid-fire button mashing =====
+  const elapsedSinceLast = Date.now() - _lastScanStarted;
+  if (elapsedSinceLast < SCAN_COOLDOWN_MS) {
+    const remaining = Math.ceil((SCAN_COOLDOWN_MS - elapsedSinceLast) / 1000);
+    setProgress(`Please wait ${remaining}s before re-scanning (rate-limit protection)`);
+    return;
+  }
+  _lastScanStarted = Date.now();
+
+  // ===== Cache: reuse recent results for the same wallet =====
+  const cached = _scanCache.get(addr);
+  if (cached && Date.now() - cached.ts < SCAN_CACHE_TTL_MS) {
+    setProgress(`Using cached results from ${Math.floor((Date.now() - cached.ts) / 1000)}s ago`);
+    lastScan = cached.scans;
+    renderResults(cached.scans, true);
     return;
   }
 
@@ -114,8 +142,6 @@ async function runScan() {
   setProgress(`Scanning ${SOURCES.length} source${SOURCES.length === 1 ? '' : 's'}…`);
 
   try {
-    // Run every enabled source in parallel. Each source is independent —
-    // a failure in one does not block the others.
     const scans = await Promise.all(
       SOURCES.map(async (src) => {
         try {
@@ -130,7 +156,13 @@ async function runScan() {
       }),
     );
     lastScan = scans;
-    renderResults(scans);
+    // Only cache COMPLETE scans. Incomplete ones should be retriable
+    // immediately so the user can get a clean result.
+    const allComplete = scans.every((s) => s && s.complete !== false);
+    if (allComplete) {
+      _scanCache.set(addr, { scans, ts: Date.now() });
+    }
+    renderResults(scans, false);
   } catch (e) {
     setProgress(`Scan failed: ${e.message || e}`);
   } finally {
@@ -139,11 +171,16 @@ async function runScan() {
   }
 }
 
+/** Clear scan cache — exposed for debugging / settings UI. */
+export function clearScanCache() {
+  _scanCache.clear();
+}
+
 // ===== Results rendering =====
 // Takes an array of ScanResult (one per source) and renders all items
 // grouped by source. Each source still owns its own WETH aggregate display
-// if relevant.
-function renderResults(scans) {
+// if relevant. `fromCache` adds a subtle notice that results are reused.
+function renderResults(scans, fromCache = false) {
   show($('#results-card'), true);
   const list = $('#token-list');
   clear(list);
@@ -163,7 +200,8 @@ function renderResults(scans) {
   summary.appendChild(document.createTextNode(
     `Scanned ${scans.length} source${scans.length === 1 ? '' : 's'}. ` +
     `Found ${totalCount} item${totalCount === 1 ? '' : 's'}. ` +
-    `${claimableCount} with claimable balances.`
+    `${claimableCount} with claimable balances.` +
+    (fromCache ? ' (cached)' : '')
   ));
 
   // Warn prominently if any scan came back incomplete (chunks failed even
