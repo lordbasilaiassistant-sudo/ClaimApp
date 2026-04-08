@@ -101,14 +101,22 @@ async function resolvePoolTokens(poolIds, onLog) {
     metaCalls.push({ target: r.tokenAddress, iface: erc20Iface, method: 'decimals', args: [] });
   }
   const metaResults = await multicallRead(metaCalls);
+  // Soft length caps on token metadata — a malicious ERC20 contract could
+  // return arbitrary-length strings from name/symbol. createTextNode is
+  // XSS-safe but an absurdly long symbol would break row layout.
+  const capStr = (s, max) => {
+    const str = String(s || '').replace(/[\x00-\x1F\x7F]/g, '');
+    return str.length > max ? str.slice(0, max) + '…' : str;
+  };
   for (let i = 0; i < resolved.length; i++) {
     const base = i * 3;
     const nameRes = metaResults[base];
     const symRes = metaResults[base + 1];
     const decRes = metaResults[base + 2];
-    resolved[i].name = (nameRes?.success && nameRes.result) ? String(nameRes.result) : '';
-    resolved[i].symbol = (symRes?.success && symRes.result) ? String(symRes.result) : '???';
-    resolved[i].decimals = decRes?.success ? Number(decRes.result) : 18;
+    resolved[i].name = nameRes?.success ? capStr(nameRes.result, 64) : '';
+    resolved[i].symbol = symRes?.success ? capStr(symRes.result, 16) : '???';
+    if (!resolved[i].symbol) resolved[i].symbol = '???';
+    resolved[i].decimals = decRes?.success ? Math.min(Number(decRes.result) || 18, 36) : 18;
   }
 
   return resolved;

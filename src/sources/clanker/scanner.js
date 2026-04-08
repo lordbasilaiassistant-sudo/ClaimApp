@@ -326,6 +326,14 @@ export async function queryClaimables(walletAddress, launches) {
   const wethRes = results[0];
   const wethClaimable = wethRes?.success ? BigInt(wethRes.result) : 0n;
 
+  // Soft length caps on token metadata — a malicious ERC20 contract could
+  // return arbitrary-length strings from name/symbol. createTextNode is
+  // XSS-safe but an absurdly long symbol would break row layout.
+  const capStr = (s, max) => {
+    const str = String(s || '').replace(/[\x00-\x1F\x7F]/g, '');
+    return str.length > max ? str.slice(0, max) + '…' : str;
+  };
+
   const items = [];
   let resultIdx = 1;
 
@@ -336,9 +344,9 @@ export async function queryClaimables(walletAddress, launches) {
     const decRes = results[resultIdx++];
     const nameRes = results[resultIdx++];
     const claimable = availRes?.success ? BigInt(availRes.result) : 0n;
-    const symbol = (symRes?.success && symRes.result) ? String(symRes.result) : l.symbol || '???';
-    const decimals = decRes?.success ? Number(decRes.result) : 18;
-    const name = (nameRes?.success && nameRes.result) ? String(nameRes.result) : l.name || symbol;
+    const symbol = capStr((symRes?.success && symRes.result) || l.symbol || '???', 16) || '???';
+    const decimals = decRes?.success ? Math.min(Number(decRes.result) || 18, 36) : 18;
+    const name = capStr((nameRes?.success && nameRes.result) || l.name || symbol, 64);
 
     items.push({
       source: 'clanker',
@@ -362,9 +370,9 @@ export async function queryClaimables(walletAddress, launches) {
     const symRes = results[resultIdx++];
     const decRes = results[resultIdx++];
     const nameRes = results[resultIdx++];
-    const symbol = (symRes?.success && symRes.result) ? String(symRes.result) : l.symbol || '???';
-    const decimals = decRes?.success ? Number(decRes.result) : 18;
-    const name = (nameRes?.success && nameRes.result) ? String(nameRes.result) : l.name || symbol;
+    const symbol = capStr((symRes?.success && symRes.result) || l.symbol || '???', 16) || '???';
+    const decimals = decRes?.success ? Math.min(Number(decRes.result) || 18, 36) : 18;
+    const name = capStr((nameRes?.success && nameRes.result) || l.name || symbol, 64);
 
     items.push({
       source: 'clanker',
