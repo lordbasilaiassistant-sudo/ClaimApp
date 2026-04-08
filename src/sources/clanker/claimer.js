@@ -16,7 +16,11 @@
 
 import { ethers } from '../../vendor/ethers.js';
 import { CLANKER } from './config.js';
-import { FEE_LOCKER_ABI, LP_LOCKER_ABI } from './abis.js';
+import {
+  FEE_LOCKER_ABI,
+  LP_LOCKER_ABI,
+  CLANKER_LEGACY_FACTORY_CLAIM_ABI,
+} from './abis.js';
 
 /**
  * @param {import('./scanner.js').ClaimItem} item
@@ -29,8 +33,11 @@ export async function claimItem(item, signer, options = {}) {
   if (item.source !== 'clanker') {
     return { ok: false, txs: [], error: 'not a clanker item' };
   }
+
+  // Legacy versions (v2/v3/v3_1) use a different claim path — the factory
+  // itself exposes claimRewards(token). No collect step, no FeeLocker.
   if (item.version !== 'v4') {
-    return { ok: false, txs: [], error: `version ${item.version} not yet supported` };
+    return claimLegacyItem(item, signer);
   }
 
   const feeLocker = new ethers.Contract(CLANKER.v4.feeLocker, FEE_LOCKER_ABI, signer);
@@ -88,6 +95,47 @@ export async function claimWeth(signer) {
     return { ok: true, hash: tx.hash, amount: available };
   } catch (e) {
     return { ok: false, error: e.shortMessage || e.message };
+  }
+}
+
+/**
+ * Claim legacy (v2/v3/v3_1) LP fees by calling factory.claimRewards(token).
+ *
+ * Legacy factories are the claim contract — no separate locker, no collect
+ * step. There's no view function for pending fees either, so we just call
+ * claimRewards and let it revert if nothing's available.
+ *
+ * The factory address per item is stored in `item.meta.factoryAddress`
+ * which was populated by the scanner.
+ *
+ * @param {Object} item
+ * @param {ethers.Wallet} signer
+ * @returns {Promise<{ok: boolean, txs: Array, error?: string}>}
+ */
+export async function claimLegacyItem(item, signer) {
+  const factoryAddress = item.meta?.factoryAddress;
+  if (!factoryAddress) {
+    return { ok: false, txs: [], error: 'missing factory address for legacy claim' };
+  }
+  try {
+    const factory = new ethers.Contract(
+      factoryAddress,
+      CLANKER_LEGACY_FACTORY_CLAIM_ABI,
+      signer,
+    );
+    const tx = await factory.claimRewards(item.tokenAddress);
+    const receipt = await tx.wait();
+    return {
+      ok: true,
+      txs: [{ label: 'claimRewards', hash: tx.hash, block: receipt.blockNumber }],
+    };
+  } catch (e) {
+    const msg = e.shortMessage || e.message || 'claim failed';
+    // Friendlier error for the common "nothing to claim" case.
+    const friendly = /revert|not.?allowed|no.?rewards|zero/i.test(msg)
+      ? 'No rewards available to claim on this token yet.'
+      : msg;
+    return { ok: false, txs: [], error: friendly };
   }
 }
 

@@ -36,6 +36,19 @@ export const LP_LOCKER_ABI = [
 // launches where fees have landed in FeeLocker also show up in StoreTokens.
 // Scanning both and merging gives complete coverage.
 
+// ===== Legacy Clanker (v2, v3, v3_1) Factory — claimRewards function =====
+// Source: clanker-sdk/dist/legacyFeeClaims/index.js line 1018-1024
+// For v2/v3/v3_1 launches, fees are claimed by calling the FACTORY itself
+// (not a separate locker like v4). Single function, single argument.
+//
+// There is NO corresponding view function to check pending fees — the
+// only way to know if rewards are claimable is to call claimRewards() and
+// see if it reverts (empty) or succeeds (paid out). We handle that in the
+// claimer with a try/catch.
+export const CLANKER_LEGACY_FACTORY_CLAIM_ABI = [
+  'function claimRewards(address token)',
+];
+
 // ===== Clanker v4 Factory — TokenCreated event =====
 // Event signature (from clanker-sdk@latest v4/index.js):
 //   event TokenCreated(

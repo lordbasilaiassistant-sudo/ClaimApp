@@ -321,20 +321,27 @@ function renderTokenRow(item) {
   const name = String(item?.name ?? '');
   const tokenAddress = String(item?.tokenAddress ?? '');
   const claimableArr = Array.isArray(item?.claimable) ? item.claimable : [];
+  const legacyUnknown = item?.legacyUnknownBalance === true;
 
   const hasClaimable = claimableArr.some((c) => c && typeof c.amount === 'bigint' && c.amount > 0n);
 
-  const claimableText = claimableArr.length === 0
-    ? (isLegacy ? 'legacy — see Basescan' : '0')
-    : claimableArr
-        .map((c) => {
-          try {
-            return `${formatAmount(c.amount, c.decimals)} ${c.symbol || '???'}`;
-          } catch {
-            return '?';
-          }
-        })
-        .join(' + ');
+  // Display text for the claimable column:
+  //   - v4 with balance → formatted amount
+  //   - v4 with zero    → "0"
+  //   - legacy          → "? (try claim)" — balance is unknown at scan time
+  let claimableText;
+  if (claimableArr.length > 0) {
+    claimableText = claimableArr
+      .map((c) => {
+        try { return `${formatAmount(c.amount, c.decimals)} ${c.symbol || '???'}`; }
+        catch { return '?'; }
+      })
+      .join(' + ');
+  } else if (legacyUnknown) {
+    claimableText = '? (try claim)';
+  } else {
+    claimableText = '0';
+  }
 
   const left = el('div', { className: 'meta' }, [
     el('div', { className: 'symbol' }, symbol),
@@ -351,17 +358,20 @@ function renderTokenRow(item) {
   ]);
 
   const amount = el('div', {
-    className: `claimable-amt ${hasClaimable ? '' : 'zero'}`,
+    className: `claimable-amt ${hasClaimable ? '' : legacyUnknown ? 'unknown' : 'zero'}`,
   }, claimableText);
 
   const actions = el('div', { className: 'actions' });
   const versionBadge = el('span', { className: 'version-badge' }, version);
   actions.appendChild(versionBadge);
 
-  if (canSign() && version === 'v4') {
+  // Show a Claim button if we can sign AND it's either a v4 token with
+  // claimable > 0, OR a legacy token (we don't know the balance — the
+  // user can try).
+  if (canSign() && (version === 'v4' || isLegacy)) {
     const btn = el('button', {
       className: 'btn small success',
-    }, 'Claim');
+    }, isLegacy ? 'Try Claim' : 'Claim');
     btn.addEventListener('click', () => handleClaimItem(item, btn));
     actions.appendChild(btn);
   }

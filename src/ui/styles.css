@@ -457,6 +457,7 @@ input[type="password"]:focus {
   text-align: right;
 }
 .token-row .claimable-amt.zero { color: var(--muted); }
+.token-row .claimable-amt.unknown { color: var(--warn); font-style: italic; }
 .token-row .version-badge {
   font-size: 10px;
   padding: 2px 6px;

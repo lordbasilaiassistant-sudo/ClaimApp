@@ -29,15 +29,18 @@ import {
   FEE_LOCKER_ABI,
   ERC20_ABI,
   CLANKER_V4_FACTORY_ABI,
+  CLANKER_V3_FACTORY_ABI,
 } from './abis.js';
 
 const feeLockerIface = new ethers.Interface(FEE_LOCKER_ABI);
 const erc20Iface = new ethers.Interface(ERC20_ABI);
 const v4FactoryIface = new ethers.Interface(CLANKER_V4_FACTORY_ABI);
+const v3FactoryIface = new ethers.Interface(CLANKER_V3_FACTORY_ABI);
 
 // Cached topic hashes for event filters.
 const STORE_TOKENS_TOPIC = feeLockerIface.getEvent('StoreTokens').topicHash;
 const TOKEN_CREATED_TOPIC = v4FactoryIface.getEvent('TokenCreated').topicHash;
+const V3_TOKEN_CREATED_TOPIC = v3FactoryIface.getEvent('TokenCreated').topicHash;
 
 /**
  * Path A — scan FeeLocker StoreTokens events.
@@ -74,6 +77,57 @@ async function scanFeeLockerDeposits(walletAddress, fromBlock, toBlock, onLog) {
     }
   }
   onLog?.(`  [A] found ${tokens.size} token${tokens.size === 1 ? '' : 's'} with fee deposits`);
+  return { tokens, failedRanges };
+}
+
+/**
+ * Path C — scan legacy v2/v3/v3_1 factories for TokenCreated events.
+ * Legacy versions use `factory.claimRewards(token)` to withdraw fees —
+ * no FeeLocker, so we can't scan for StoreTokens. Discovery is via the
+ * TokenCreated event filtered by creatorAdmin (topic[2] in the v3 event).
+ *
+ * Returns one map entry per (version, token) pair so the UI can dispatch
+ * claims to the correct factory.
+ */
+async function scanLegacyFactory(version, walletAddress, fromBlock, toBlock, onLog) {
+  const cfg = CLANKER[version];
+  if (!cfg || !cfg.factory) return { tokens: new Map(), failedRanges: [] };
+
+  const paddedAdmin = ethers.zeroPadValue(ethers.getAddress(walletAddress), 32);
+  // v3 / v3_1 / v2 event: topic[1]=tokenAddress, topic[2]=creatorAdmin, topic[3]=interfaceAdmin
+  const filter = {
+    address: cfg.factory,
+    topics: [V3_TOKEN_CREATED_TOPIC, null, paddedAdmin, null],
+    fromBlock: Number(fromBlock),
+    toBlock: Number(toBlock),
+  };
+
+  onLog?.(`  [legacy ${version}] scanning ${cfg.factory} (creatorAdmin=wallet)…`);
+  const { logs, failedRanges } = await fetchLogs(filter, onLog);
+
+  const tokens = new Map();
+  for (const raw of logs) {
+    try {
+      const parsed = v3FactoryIface.parseLog({ topics: raw.topics, data: raw.data });
+      if (!parsed || parsed.name !== 'TokenCreated') continue;
+      const tokenAddr = parsed.args.tokenAddress;
+      const key = `${version}:${tokenAddr.toLowerCase()}`;
+      if (tokens.has(key)) continue;
+      tokens.set(key, {
+        address: tokenAddr,
+        firstBlock: parseInt(raw.blockNumber, 16),
+        firstTx: raw.transactionHash,
+        source: 'legacy-admin',
+        version,
+        factoryAddress: cfg.factory,
+        name: parsed.args.name || '',
+        symbol: parsed.args.symbol || '',
+      });
+    } catch {
+      /* skip */
+    }
+  }
+  onLog?.(`  [legacy ${version}] found ${tokens.size} token${tokens.size === 1 ? '' : 's'}`);
   return { tokens, failedRanges };
 }
 
@@ -120,77 +174,111 @@ async function scanFactoryLaunches(walletAddress, fromBlock, toBlock, onLog) {
 }
 
 /**
- * Discover all Clanker v4 tokens the wallet has any stake in.
- * Runs paths A and B in parallel, merges, dedupes.
+ * Discover all Clanker tokens (v4 + legacy) the wallet has any stake in.
+ * Runs each scan path sequentially to respect tenderly rate limits.
  *
  * @param {string} walletAddress
  * @param {Object} [options]
+ * @param {boolean} [options.includeLegacy=true] — scan v3_1/v3/v2 factories too
  * @param {(msg: string) => void} [options.onLog]
  * @returns {Promise<{launches: Array, failedRanges: Array}>}
  */
 export async function discoverLaunches(walletAddress, options = {}) {
   const onLog = options.onLog || (() => {});
+  const includeLegacy = options.includeLegacy !== false;
   const provider = getProvider();
 
   const latestBlock = BigInt(await provider.getBlockNumber());
-  const startBlock = CLANKER.v4.startBlock;
+  const v4StartBlock = CLANKER.v4.startBlock;
 
-  onLog(`[v4] scanning ${startBlock} → ${latestBlock}`);
+  onLog(`[v4] scanning ${v4StartBlock} → ${latestBlock}`);
 
-  // Run paths sequentially, not in parallel — we only have ONE browser-safe
-  // large-range provider (tenderly), and doubling the in-flight load against
-  // it triggers aggressive rate limiting (31/65 chunks failed in testing
-  // when A and B ran via Promise.all). Serial halves peak load at the cost
-  // of ~2x wall-clock time, which is still well under 5 seconds total.
-  const feeLockerResult = await scanFeeLockerDeposits(walletAddress, startBlock, latestBlock, onLog);
-  const factoryResult = await scanFactoryLaunches(walletAddress, startBlock, latestBlock, onLog);
+  // ===== v4 paths (sequential to avoid tenderly rate-limit spike) =====
+  const feeLockerResult = await scanFeeLockerDeposits(walletAddress, v4StartBlock, latestBlock, onLog);
+  const factoryResult = await scanFactoryLaunches(walletAddress, v4StartBlock, latestBlock, onLog);
 
-  // Merge both maps — preferring factory results for display fields
-  // (since they include name/symbol from the launch event).
-  const merged = new Map();
+  // Merge v4 results — preferring factory for display fields
+  const v4Merged = new Map();
   for (const [key, val] of feeLockerResult.tokens) {
-    merged.set(key, val);
+    v4Merged.set(key, { ...val, version: 'v4' });
   }
   for (const [key, val] of factoryResult.tokens) {
-    const existing = merged.get(key);
+    const existing = v4Merged.get(key);
     if (existing) {
-      // Merge: keep factory name/symbol, mark as both admin AND recipient
-      merged.set(key, {
+      v4Merged.set(key, {
         ...existing,
         name: val.name || existing.name,
         symbol: val.symbol || existing.symbol,
         source: 'admin+recipient',
       });
     } else {
-      merged.set(key, val);
+      v4Merged.set(key, { ...val, version: 'v4' });
+    }
+  }
+  onLog(`[v4] merged: ${v4Merged.size} unique tokens (A=${feeLockerResult.tokens.size}, B=${factoryResult.tokens.size})`);
+
+  // ===== Legacy paths (v3_1, v3) =====
+  // Run serially after v4 to keep load manageable on the single large-range provider.
+  const legacyResults = { tokens: new Map(), failedRanges: [] };
+  if (includeLegacy) {
+    for (const version of ['v3_1', 'v3']) {
+      const cfg = CLANKER[version];
+      if (!cfg || !cfg.factory) continue;
+      const result = await scanLegacyFactory(version, walletAddress, cfg.startBlock, latestBlock, onLog);
+      for (const [key, val] of result.tokens) {
+        legacyResults.tokens.set(key, val);
+      }
+      legacyResults.failedRanges.push(...result.failedRanges);
     }
   }
 
-  onLog(`[v4] merged: ${merged.size} unique tokens (A=${feeLockerResult.tokens.size}, B=${factoryResult.tokens.size})`);
-
-  const launches = [...merged.values()].map((t) => ({
-    version: 'v4',
-    tokenAddress: t.address,
-    tokenAdmin: null,
-    name: t.name || '',
-    symbol: t.symbol || '',
-    launchBlock: t.firstBlock || 0,
-    txHash: t.firstTx || '',
-    discoverySource: t.source, // 'recipient' | 'admin' | 'admin+recipient'
-  }));
+  // ===== Combine v4 + legacy into a single launches array =====
+  const launches = [];
+  for (const t of v4Merged.values()) {
+    launches.push({
+      version: 'v4',
+      tokenAddress: t.address,
+      tokenAdmin: null,
+      name: t.name || '',
+      symbol: t.symbol || '',
+      launchBlock: t.firstBlock || 0,
+      txHash: t.firstTx || '',
+      discoverySource: t.source,
+      factoryAddress: CLANKER.v4.factory,
+    });
+  }
+  for (const t of legacyResults.tokens.values()) {
+    launches.push({
+      version: t.version,
+      tokenAddress: t.address,
+      tokenAdmin: null,
+      name: t.name || '',
+      symbol: t.symbol || '',
+      launchBlock: t.firstBlock || 0,
+      txHash: t.firstTx || '',
+      discoverySource: t.source,
+      factoryAddress: t.factoryAddress,
+    });
+  }
 
   // Sort newest-first.
   launches.sort((a, b) => b.launchBlock - a.launchBlock);
 
   return {
     launches,
-    failedRanges: [...feeLockerResult.failedRanges, ...factoryResult.failedRanges],
+    failedRanges: [
+      ...feeLockerResult.failedRanges,
+      ...factoryResult.failedRanges,
+      ...legacyResults.failedRanges,
+    ],
   };
 }
 
 /**
- * Query FeeLocker for current claimable balances and ERC20 metadata
- * for every discovered token. One Multicall3 roundtrip.
+ * Query FeeLocker for v4 claimable balances + ERC20 metadata for every
+ * discovered token (v4 and legacy). Legacy tokens use a placeholder
+ * "unknown" claimable since there's no view function on the legacy
+ * factory — users have to call claimRewards to find out.
  *
  * @param {string} walletAddress
  * @param {Array} launches
@@ -199,8 +287,13 @@ export async function discoverLaunches(walletAddress, options = {}) {
 export async function queryClaimables(walletAddress, launches) {
   if (launches.length === 0) return { items: [], wethClaimable: 0n };
 
+  // Split v4 from legacy — we only query FeeLocker for v4.
+  const v4Launches = launches.filter((l) => l.version === 'v4');
+  const legacyLaunches = launches.filter((l) => l.version !== 'v4');
+
+  // Build multicall: WETH for v4 + per-token availableFees for v4 + per-token
+  // ERC20 metadata (symbol/decimals/name) for ALL tokens (v4 and legacy).
   const calls = [
-    // [0] WETH availableFees — shared across all tokens
     {
       target: CLANKER.v4.feeLocker,
       iface: feeLockerIface,
@@ -208,31 +301,18 @@ export async function queryClaimables(walletAddress, launches) {
       args: [walletAddress, CLANKER.weth],
     },
   ];
-  for (const l of launches) {
-    calls.push({
-      target: CLANKER.v4.feeLocker,
-      iface: feeLockerIface,
-      method: 'availableFees',
-      args: [walletAddress, l.tokenAddress],
-    });
-    calls.push({
-      target: l.tokenAddress,
-      iface: erc20Iface,
-      method: 'symbol',
-      args: [],
-    });
-    calls.push({
-      target: l.tokenAddress,
-      iface: erc20Iface,
-      method: 'decimals',
-      args: [],
-    });
-    calls.push({
-      target: l.tokenAddress,
-      iface: erc20Iface,
-      method: 'name',
-      args: [],
-    });
+  // v4 gets 4 calls per token: availableFees + symbol + decimals + name
+  for (const l of v4Launches) {
+    calls.push({ target: CLANKER.v4.feeLocker, iface: feeLockerIface, method: 'availableFees', args: [walletAddress, l.tokenAddress] });
+    calls.push({ target: l.tokenAddress, iface: erc20Iface, method: 'symbol', args: [] });
+    calls.push({ target: l.tokenAddress, iface: erc20Iface, method: 'decimals', args: [] });
+    calls.push({ target: l.tokenAddress, iface: erc20Iface, method: 'name', args: [] });
+  }
+  // Legacy gets 3 calls per token: symbol + decimals + name (no fee balance)
+  for (const l of legacyLaunches) {
+    calls.push({ target: l.tokenAddress, iface: erc20Iface, method: 'symbol', args: [] });
+    calls.push({ target: l.tokenAddress, iface: erc20Iface, method: 'decimals', args: [] });
+    calls.push({ target: l.tokenAddress, iface: erc20Iface, method: 'name', args: [] });
   }
 
   const results = await multicallRead(calls);
@@ -241,24 +321,18 @@ export async function queryClaimables(walletAddress, launches) {
   const wethClaimable = wethRes?.success ? BigInt(wethRes.result) : 0n;
 
   const items = [];
-  for (let i = 0; i < launches.length; i++) {
-    const l = launches[i];
-    const base = 1 + i * 4;
-    const availRes = results[base];
-    const symRes = results[base + 1];
-    const decRes = results[base + 2];
-    const nameRes = results[base + 3];
+  let resultIdx = 1;
 
+  // v4 items (4 results each)
+  for (const l of v4Launches) {
+    const availRes = results[resultIdx++];
+    const symRes = results[resultIdx++];
+    const decRes = results[resultIdx++];
+    const nameRes = results[resultIdx++];
     const claimable = availRes?.success ? BigInt(availRes.result) : 0n;
-    // Prefer the launch event's symbol/name if we have them, otherwise use
-    // the ERC20 reads. Fall back to '???' for tokens that don't expose them.
-    const symbol = (symRes?.success && symRes.result)
-      ? String(symRes.result)
-      : l.symbol || '???';
+    const symbol = (symRes?.success && symRes.result) ? String(symRes.result) : l.symbol || '???';
     const decimals = decRes?.success ? Number(decRes.result) : 18;
-    const name = (nameRes?.success && nameRes.result)
-      ? String(nameRes.result)
-      : l.name || symbol;
+    const name = (nameRes?.success && nameRes.result) ? String(nameRes.result) : l.name || symbol;
 
     items.push({
       source: 'clanker',
@@ -267,13 +341,42 @@ export async function queryClaimables(walletAddress, launches) {
       name,
       symbol,
       tokenAddress: l.tokenAddress,
-      claimable: claimable > 0n
-        ? [{ token: l.tokenAddress, symbol, amount: claimable, decimals }]
-        : [],
+      claimable: claimable > 0n ? [{ token: l.tokenAddress, symbol, amount: claimable, decimals }] : [],
       meta: {
         launchBlock: l.launchBlock,
         txHash: l.txHash,
         discoverySource: l.discoverySource,
+        factoryAddress: l.factoryAddress,
+      },
+    });
+  }
+
+  // Legacy items (3 results each, no claimable balance read)
+  for (const l of legacyLaunches) {
+    const symRes = results[resultIdx++];
+    const decRes = results[resultIdx++];
+    const nameRes = results[resultIdx++];
+    const symbol = (symRes?.success && symRes.result) ? String(symRes.result) : l.symbol || '???';
+    const decimals = decRes?.success ? Number(decRes.result) : 18;
+    const name = (nameRes?.success && nameRes.result) ? String(nameRes.result) : l.name || symbol;
+
+    items.push({
+      source: 'clanker',
+      id: `${l.version}:${l.tokenAddress.toLowerCase()}`,
+      version: l.version,
+      name,
+      symbol,
+      tokenAddress: l.tokenAddress,
+      // Legacy tokens have no view function for pending fees. Mark claimable
+      // as 'unknown' so the UI can show a "Try Claim" button instead of a
+      // balance. The actual claim will revert if nothing is available.
+      claimable: [],
+      legacyUnknownBalance: true,
+      meta: {
+        launchBlock: l.launchBlock,
+        txHash: l.txHash,
+        discoverySource: l.discoverySource,
+        factoryAddress: l.factoryAddress,
       },
     });
   }
