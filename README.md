@@ -84,6 +84,51 @@ All contract addresses live in [`src/sources/clanker/config.js`](src/sources/cla
 verified against the published [`clanker-sdk`](https://www.npmjs.com/package/clanker-sdk)
 package.
 
+## How fast is it?
+
+A full discovery scan of a wallet with 45+ Clanker launches completes in
+**under 2 seconds** on a normal home connection. This is because the scanner
+routes the `eth_getLogs` hot path through a curated list of public RPCs
+that support large-range queries (`merkle.io` accepts 500k-block windows,
+`tenderly.co/public/base` accepts 200k), chunks accordingly, and never
+touches providers that choke on multi-million-block ranges.
+
+For every other RPC method (balance reads, contract calls, Multicall3 batches)
+the app uses an in-project multi-provider router (`src/services/rpc/`) with
+per-provider concurrency slots, 429 cooldown, and automatic failover.
+
+## RPC etiquette
+
+ClaimApp runs against **public** RPC endpoints by default. Every request is
+a small burden on a shared resource — if we abuse the endpoints, they get
+slower for everyone (including other ClaimApp users). The app respects these
+limits by design:
+
+- **Per-provider concurrency caps.** Each provider has a `maxConcurrent` slot
+  budget enforced by the router. New requests wait for a free slot instead
+  of piling up.
+- **429 exponential backoff.** A rate-limit response marks the provider as
+  cool-down for 1s → 2s → 4s → 8s → 16s → 32s → 60s (capped).
+- **Failover on failure.** Failed requests try a different provider rather
+  than retrying the one that just failed.
+- **Bounded scan concurrency.** The scanner caps in-flight chunks so we
+  never exceed total slot capacity across all providers.
+- **No background pinging.** Health data is collected from real user traffic
+  only — no speculative health-check requests.
+
+If you have your own paid RPC (Alchemy, Infura, QuickNode, etc.) and want
+to skip the public rotation, you can add it via the settings UI (coming soon)
+or fork and edit `src/services/rpc/providers.js` directly.
+
+**Current provider set** (verified at build-time via `test/bench-providers.mjs`):
+
+| Provider           | Role                 | Max log range |
+|--------------------|----------------------|---------------|
+| `merkle.io`        | large-range getLogs  | 500k blocks   |
+| `gateway.tenderly` | large-range getLogs  | 200k blocks   |
+| `mainnet.base.org` | general + 10k getLogs| 10k blocks    |
+| `developer-access` | general + 10k getLogs| 10k blocks    |
+
 ## Repo layout
 
 ```

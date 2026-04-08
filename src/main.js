@@ -246,50 +246,84 @@ function renderTokenRow(item) {
 }
 
 // ===== Claim handlers =====
+// Sanitize errors shown to the user — RPC error strings can embed the full
+// raw request body in rare failure modes. Prefer ethers' shortMessage and
+// fall back to a generic string rather than dumping the raw error.
+function safeErrorMessage(e) {
+  if (!e) return 'Unknown error';
+  if (typeof e === 'string') return e;
+  if (e.shortMessage) return e.shortMessage;
+  // Whitelist a few safe ethers error codes
+  if (e.code === 'INSUFFICIENT_FUNDS') return 'Insufficient funds for gas';
+  if (e.code === 'NONCE_EXPIRED') return 'Nonce expired';
+  if (e.code === 'TIMEOUT') return 'Request timed out';
+  if (e.code === 'NETWORK_ERROR') return 'Network error';
+  if (e.code === 'ACTION_REJECTED') return 'Transaction rejected';
+  return 'Transaction failed';
+}
+
+// Claim confirmation dialog. Shows the recipient address (derived from the
+// currently-loaded signer, not user input) before we broadcast. Prevents a
+// user who pasted the wrong key from sweeping funds to an unexpected address.
+function confirmClaim(recipient, label) {
+  return window.confirm(
+    `Confirm claim:\n\n` +
+    `  Action: ${label}\n` +
+    `  Recipient: ${recipient}\n\n` +
+    `This will broadcast a transaction from the currently loaded wallet. ` +
+    `Proceed?`,
+  );
+}
+
 async function handleClaimWeth() {
   if (!canSign()) return;
   const btn = $('#claim-weth-btn');
+  const signer = getSigner();
+  const recipient = await signer.getAddress();
+  if (!confirmClaim(recipient, 'Claim aggregate WETH fees')) return;
+
   btn.disabled = true;
   btn.textContent = 'Claiming…';
   try {
-    const signer = getSigner();
     const res = await clanker.claimWeth(signer);
     if (res.ok) {
       btn.textContent = '✓ Claimed';
       appendProgress(`WETH claimed: ${res.hash}`);
-      // Re-scan to refresh balances
-      setTimeout(() => runScan(), 2000);
+      setTimeout(() => runScan(), 4000);
     } else {
       btn.textContent = 'Claim WETH';
       btn.disabled = false;
-      alert(`Claim failed: ${res.error}`);
+      window.alert(`Claim failed: ${safeErrorMessage({ shortMessage: res.error })}`);
     }
   } catch (e) {
     btn.textContent = 'Claim WETH';
     btn.disabled = false;
-    alert(`Claim failed: ${e.message || e}`);
+    window.alert(`Claim failed: ${safeErrorMessage(e)}`);
   }
 }
 
 async function handleClaimItem(item, btn) {
   if (!canSign()) return;
+  const signer = getSigner();
+  const recipient = await signer.getAddress();
+  if (!confirmClaim(recipient, `Claim ${item.symbol} fees (${item.tokenAddress.slice(0, 10)}…)`)) return;
+
   btn.disabled = true;
   btn.textContent = 'Claiming…';
   try {
-    const signer = getSigner();
     const res = await clanker.claimItem(item, signer);
     if (res.ok) {
       btn.textContent = '✓';
-      setTimeout(() => runScan(), 2000);
+      setTimeout(() => runScan(), 4000);
     } else {
       btn.textContent = 'Claim';
       btn.disabled = false;
-      alert(`Claim failed: ${res.error}`);
+      window.alert(`Claim failed: ${safeErrorMessage({ shortMessage: res.error })}`);
     }
   } catch (e) {
     btn.textContent = 'Claim';
     btn.disabled = false;
-    alert(`Claim failed: ${e.message || e}`);
+    window.alert(`Claim failed: ${safeErrorMessage(e)}`);
   }
 }
 

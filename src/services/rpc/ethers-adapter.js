@@ -20,7 +20,6 @@ export class MultiRpcProvider extends ethers.JsonRpcApiProvider {
     // Pass a fixed Network so ethers doesn't try to detect it.
     const network = new ethers.Network('base', BigInt(chainId));
     super(network, { staticNetwork: network, batchMaxCount: 1 });
-    this._router = getRouter();
   }
 
   /**
@@ -28,19 +27,21 @@ export class MultiRpcProvider extends ethers.JsonRpcApiProvider {
    * responses because JsonRpcApiProvider batches. We disable batching above
    * (batchMaxCount: 1), so we always receive a single-element payload array.
    *
+   * We look up the router via getRouter() on every call instead of caching
+   * it in the constructor — that way resetRouter() in src/services/provider.js
+   * takes effect for in-flight provider instances too.
+   *
    * @param {Array<{method: string, params: any[]}>} payload
    * @returns {Promise<Array<{result?: any, error?: any}>>}
    */
   async _send(payload) {
-    // ethers may send either a single object or an array. Normalize to array.
+    const router = getRouter();
     const requests = Array.isArray(payload) ? payload : [payload];
 
-    // Send each request through the router. Router returns the result directly
-    // and throws on error — we convert back to ethers' expected shape.
     const responses = await Promise.all(
       requests.map(async (req) => {
         try {
-          const result = await this._router.send({
+          const result = await router.send({
             method: req.method,
             params: req.params || [],
           });

@@ -7,15 +7,16 @@
   <meta name="description" content="ClaimApp — a universal on-chain claim finder. Scan multiple platforms for anything your wallet can claim. Private-key-local, open source, no backend." />
   <meta name="robots" content="noindex" />
 
-  <!-- Strict CSP: only our own scripts, no inline JS, no remote fetches except Base RPC.
-       Users can override the RPC in settings; keep this list tight by default. -->
+  <!-- Strict CSP: only our own scripts, no inline JS.
+       connect-src allowlist MUST match src/services/rpc/providers.js exactly —
+       any mismatch causes scans to silently fail on GitHub Pages. -->
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'none';
     script-src 'self';
     style-src 'self' 'unsafe-inline';
     img-src 'self' data:;
     font-src 'self';
-    connect-src 'self' https://mainnet.base.org https://base.llamarpc.com https://base-rpc.publicnode.com https://1rpc.io https://basescan.org;
+    connect-src 'self' https://mainnet.base.org https://developer-access-mainnet.base.org https://gateway.tenderly.co https://base.merkle.io;
     form-action 'none';
     base-uri 'none';
     frame-ancestors 'none';
@@ -32,7 +33,7 @@
       <span class="tag">universal claim finder</span>
     </div>
     <nav class="app-nav">
-      <a href="https://github.com/" id="repo-link" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://github.com/drlor/ClaimApp" id="repo-link" target="_blank" rel="noopener noreferrer">GitHub</a>
     </nav>
   </header>
 
@@ -120,7 +121,7 @@
         <li><strong>Keys stay local.</strong> Private keys are held in a JavaScript closure, never written to localStorage, sessionStorage, cookies, or the DOM.</li>
         <li><strong>No telemetry.</strong> Zero analytics, zero tracking pixels, zero third-party scripts.</li>
         <li><strong>No external fetches.</strong> A strict Content-Security-Policy blocks every outbound request except Base RPC endpoints you approve.</li>
-        <li><strong>Auditable.</strong> ~500 lines of handwritten JS. Read it all in an afternoon: <a href="https://github.com/" target="_blank" rel="noopener noreferrer">source on GitHub</a>.</li>
+        <li><strong>Auditable.</strong> ~500 lines of handwritten JS. Read it all in an afternoon: <a href="https://github.com/drlor/ClaimApp" target="_blank" rel="noopener noreferrer">source on GitHub</a>.</li>
         <li><strong>Wiped on exit.</strong> Closing or refreshing the tab clears the wallet. No "remember me" checkbox exists.</li>
         <li><strong>Run local if you prefer.</strong> Clone the repo and open <code>index.html</code> directly — no install needed.</li>
       </ul>
