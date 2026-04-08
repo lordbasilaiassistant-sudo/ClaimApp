@@ -171,7 +171,7 @@ ClaimApp/
 **Option A — open directly:**
 
 ```bash
-git clone https://github.com/<you>/ClaimApp.git
+git clone https://github.com/lordbasilaiassistant-sudo/ClaimApp.git
 cd ClaimApp
 # Open index.html in your browser.
 # On Windows: start index.html
