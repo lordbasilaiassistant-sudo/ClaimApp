@@ -9,7 +9,7 @@
 ClaimApp is a zero-backend web app that scans multiple EVM platforms for
 anything your wallet can claim — LP fees, creator rewards, staking yield,
 airdrops — and lets you claim it all from one page. Runs entirely in your
-browser: no server, no telemetry, no bundler.
+browser: no server, no telemetry, no bundler, no build step.
 
 It's built modularly: each platform lives in its own folder under
 `src/sources/`. Add a new platform = add a new folder. The UI doesn't care.
@@ -17,30 +17,56 @@ It's built modularly: each platform lives in its own folder under
 > Your keys stay in your browser. No backend. No telemetry. No CDN. Host it on
 > GitHub Pages or clone and open `index.html` locally — both work.
 
+**Live site:** https://lordbasilaiassistant-sudo.github.io/ClaimApp/
+
 ## Supported sources
 
 | Source  | Status | What it finds                                                   |
 |---------|--------|-----------------------------------------------------------------|
-| Clanker | ✅ live | LP fees on Uniswap V4 pools for every Clanker token you admin   |
-| Bankr (Doppler) | planned | Doppler V4 LP fees + creator rewards                   |
-| Zora    | planned | Creator rewards, protocol rewards                               |
-| Uniswap V3/V4 (arbitrary) | planned | Sweep uncollected LP fees from positions you own |
-| Merkle airdrops | planned | Multi-protocol merkle claimers                          |
+| **Clanker v4** | ✅ live | LP fees from every Clanker token you admin OR receive rewards from (dual-path discovery) |
+| **Clanker v2/v3/v3_1** | ✅ live (opt-in) | Legacy launches — claim via `factory.claimRewards(token)`. Enable via "Deep scan" (coming soon — see issue #9) |
+| **Bankr / Doppler V4** | ✅ live | Doppler V4 LP fees via the DECAY contract. Tracks per-pool pending amounts |
+| Zora    | 📋 planned ([#14](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/14)) | Creator and protocol rewards |
+| Uniswap V3/V4 arbitrary positions | 📋 planned ([#15](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/15)) | Sweep uncollected LP fees from any position you own |
+| Merkle airdrops | 📋 planned | Multi-protocol merkle claimers |
 
-The first module is **Clanker** because [clanker.world](https://clanker.world)
-hides your launches behind a gated verified-account flow — new creators can't
-see their own tokens without a Twitter handshake. Once you scan, you'll see
-every token you've ever admin'd with its current claimable balance.
+## Why it exists
+
+[clanker.world](https://clanker.world) and similar launchpads hide your
+launches behind verified-account flows — new creators can't see their own
+tokens without a Twitter handshake. ClaimApp queries the chain directly so
+anyone with a wallet can discover and sweep their stranded rewards.
 
 ## How the Clanker module works
 
-1. Scans every Clanker factory version (`v4`, `v3_1`, `v3`, `v2`) for
-   `TokenCreated` events filtered by your wallet as `tokenAdmin`.
-2. Queries `FeeLocker.availableFees(owner, token)` for each discovered token,
-   plus the shared WETH balance.
-3. Shows everything in one list with per-token and batch claim buttons.
-4. Signs claim transactions locally with an ephemeral private key (or read-only
-   if you only paste an address).
+1. **Path A** — scans `FeeLocker.StoreTokens` events filtered by `feeOwner`
+   to catch every token where the wallet has received rewards (including
+   launches someone else deployed that pay out to the wallet).
+2. **Path B** — scans the v4 factory's `TokenCreated` events filtered by
+   `tokenAdmin` to catch newly launched tokens where nobody has called
+   `collectRewards` yet.
+3. Merges the two paths by token address, queries
+   `FeeLocker.availableFees(owner, token)` for each via Multicall3, and
+   displays them with per-row and aggregate WETH claim buttons.
+4. For legacy Clanker versions (v2/v3/v3_1), discovery scans the version
+   factory's `TokenCreated` event filtered by `creatorAdmin`, and claims
+   go through `factory.claimRewards(token)` directly (no FeeLocker).
+
+## How the Bankr module works
+
+1. Scans `Release` events on the Doppler `DECAY` contract filtered by
+   `beneficiary == wallet` to find every pool the wallet has ever received
+   rewards from.
+2. Resolves poolIds → token addresses via `DECAY.getPoolKey(poolId)`.
+3. Queries pending fees per pool via Multicall3
+   (`getShares`, `getCumulatedFees0/1`, `getLastCumulatedFees0/1`).
+4. Displays each pool with its token symbol and the approximate pending
+   amount. A "Claim" button calls `DECAY.collectFees(poolId)` — which is
+   permissionless, so any wallet with gas can trigger the payout.
+
+> **Known limitation:** Bankr discovery uses `Release` events which only
+> fire on CLAIM, so pools the wallet has never claimed from won't appear
+> in the initial scan. Tracked as [issue #10](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/10).
 
 ## Project goals
 
@@ -50,88 +76,58 @@ every token you've ever admin'd with its current claimable balance.
   Content-Security-Policy blocks every request except Base RPC.
 - **Zero persistence.** Private keys live in a JavaScript closure. No
   `localStorage`, no cookies, no "remember me". Close the tab → wiped.
-- **Modular sources.** Clanker is `src/sources/clanker/`. Future platforms
-  (Bankr, Zora, Doppler, etc.) drop in as siblings with the same interface.
-- **Auditable.** Handwritten code, no build step, no bundler. Read the source
-  in an afternoon.
-
-## How it works
-
-```
-┌─────────────────────────┐
-│ You paste address or    │
-│ private key             │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐    ┌───────────────────────┐
-│ src/sources/clanker/    │    │ Base mainnet RPC      │
-│ scanner.js              │───▶│ eth_getLogs (chunked) │
-│  → discoverLaunches()   │    │ aggregate3 multicall  │
-│  → queryClaimables()    │    └───────────────────────┘
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ UI renders the token    │
-│ list + claim buttons    │
-└────────┬────────────────┘
-         │ user clicks "Claim"
-         ▼
-┌─────────────────────────┐    ┌───────────────────────┐
-│ clanker/claimer.js      │───▶│ LpLocker.collectRewards│
-│  → claimItem()          │    │ FeeLocker.claim       │
-└─────────────────────────┘    └───────────────────────┘
-```
-
-All contract addresses live in [`src/sources/clanker/config.js`](src/sources/clanker/config.js),
-verified against the published [`clanker-sdk`](https://www.npmjs.com/package/clanker-sdk)
-package.
+- **Modular sources.** Clanker is `src/sources/clanker/`, Bankr is
+  `src/sources/bankr/`. Future platforms drop in as siblings with the
+  same `SourceAdapter` interface.
+- **Auditable.** Handwritten code, no build step, no bundler. Read the
+  source in an afternoon.
 
 ## How fast is it?
 
-A full discovery scan of a wallet with 45+ Clanker launches completes in
-**under 2 seconds** on a normal home connection. This is because the scanner
-routes the `eth_getLogs` hot path through a curated list of public RPCs
-that support large-range queries (`merkle.io` accepts 500k-block windows,
-`tenderly.co/public/base` accepts 200k), chunks accordingly, and never
-touches providers that choke on multi-million-block ranges.
+A full 2-source scan (Clanker v4 + Bankr) of a wallet with dozens of
+launches completes in **3–6 seconds** on a normal home connection. The
+scanner routes the `eth_getLogs` hot path through Tenderly's public
+gateway (200k-block windows) and falls back to a 10k-block sub-chunk
+pass across multiple browser-CORS-verified providers if the primary
+hiccups. A second-tier retry and in-flight request deduping handle
+transient rate limits without losing events.
 
-For every other RPC method (balance reads, contract calls, Multicall3 batches)
-the app uses an in-project multi-provider router (`src/services/rpc/`) with
-per-provider concurrency slots, 429 cooldown, and automatic failover.
+A **30-second in-memory scan cache** and a **2-second button cooldown**
+prevent double-clicks from triggering the rate-limit cascades that
+plagued earlier versions.
 
 ## RPC etiquette
 
-ClaimApp runs against **public** RPC endpoints by default. Every request is
-a small burden on a shared resource — if we abuse the endpoints, they get
-slower for everyone (including other ClaimApp users). The app respects these
-limits by design:
+ClaimApp runs against **public** RPC endpoints by default. Every request
+is a small burden on a shared resource — if we abuse the endpoints, they
+get slower for everyone. The app respects limits by design:
 
-- **Per-provider concurrency caps.** Each provider has a `maxConcurrent` slot
-  budget enforced by the router. New requests wait for a free slot instead
-  of piling up.
-- **429 exponential backoff.** A rate-limit response marks the provider as
-  cool-down for 1s → 2s → 4s → 8s → 16s → 32s → 60s (capped).
-- **Failover on failure.** Failed requests try a different provider rather
-  than retrying the one that just failed.
-- **Bounded scan concurrency.** The scanner caps in-flight chunks so we
-  never exceed total slot capacity across all providers.
-- **No background pinging.** Health data is collected from real user traffic
-  only — no speculative health-check requests.
+- **Per-provider concurrency caps** enforced by the in-project router
+- **429 exponential backoff** (1s → 2s → 4s → 8s → 16s → 32s → 60s)
+- **Failover on failure** — failed requests try a different provider
+- **Bounded scan concurrency** — never exceeds total slot capacity
+- **No background pinging** — health comes from real user traffic only
 
-If you have your own paid RPC (Alchemy, Infura, QuickNode, etc.) and want
-to skip the public rotation, you can add it via the settings UI (coming soon)
-or fork and edit `src/services/rpc/providers.js` directly.
+Every provider in the default set passes `test/bench-cors.mjs`, which
+verifies CORS preflight compatibility (a provider that works in Node
+but fails browser CORS is silently broken for real users — this check
+is the #1 reason we trimmed the list).
 
-**Current provider set** (verified at build-time via `test/bench-providers.mjs`):
+If you have your own paid RPC (Alchemy, Infura, QuickNode, etc.) and
+want to skip the public rotation, the settings gear icon opens a panel
+where you can add a custom URL. The CSP on the deployed site only
+allows the default providers, so custom endpoints work best when you
+clone and run locally (or fork with your URL in the CSP meta tag).
 
-| Provider           | Role                 | Max log range |
-|--------------------|----------------------|---------------|
-| `merkle.io`        | large-range getLogs  | 500k blocks   |
-| `gateway.tenderly` | large-range getLogs  | 200k blocks   |
-| `mainnet.base.org` | general + 10k getLogs| 10k blocks    |
-| `developer-access` | general + 10k getLogs| 10k blocks    |
+**Current provider set** (all CORS-verified in browser):
+
+| Provider             | Role                       | Max getLogs range |
+|----------------------|----------------------------|-------------------|
+| `gateway.tenderly.co`| large-range primary        | 200k blocks       |
+| `developer-access-mainnet.base.org` | 10k fallback | 10k blocks        |
+| `mainnet.base.org`   | 10k fallback               | 10k blocks        |
+| `nodes.sequence.app` | 10k fallback               | 10k blocks        |
+| `1rpc.io`            | 10k fallback               | 10k blocks        |
 
 ## Repo layout
 
@@ -143,17 +139,30 @@ ClaimApp/
 │   ├── config/
 │   │   └── chains.js                # Base mainnet metadata
 │   ├── services/
-│   │   ├── provider.js              # JsonRpcProvider wrapper
+│   │   ├── provider.js              # Multi-RPC ethers provider
 │   │   ├── multicall.js             # Multicall3 batching
-│   │   └── wallet.js                # Ephemeral key handling
-│   ├── sources/
-│   │   ├── index.js                 # Source registry
-│   │   └── clanker/                 # ◀── one module per platform
-│   │       ├── index.js             # Adapter entry
-│   │       ├── config.js            # All Clanker addresses
-│   │       ├── abis.js              # Contract ABIs
-│   │       ├── scanner.js           # Discovery + balance queries
-│   │       └── claimer.js           # Claim execution
+│   │   ├── wallet.js                # Ephemeral key handling
+│   │   ├── rpc-throttle.js          # Retry + concurrency primitives
+│   │   └── rpc/                     # ◀── multi-provider router
+│   │       ├── providers.js         # CORS-verified endpoint list
+│   │       ├── health.js            # Per-provider health tracking
+│   │       ├── router.js            # Multi-provider failover
+│   │       ├── ethers-adapter.js    # MultiRpcProvider (extends ethers)
+│   │       └── log-fetcher.js       # Fast-path large-range eth_getLogs
+│   ├── sources/                     # ◀── claim source modules
+│   │   ├── index.js                 # Source registry (SOURCES array)
+│   │   ├── clanker/                 # Clanker v4 + legacy
+│   │   │   ├── config.js
+│   │   │   ├── abis.js
+│   │   │   ├── scanner.js           # Dual-path discovery A + B
+│   │   │   ├── claimer.js           # v4 FeeLocker + legacy factory
+│   │   │   └── index.js
+│   │   └── bankr/                   # Bankr / Doppler V4
+│   │       ├── config.js
+│   │       ├── abis.js
+│   │       ├── scanner.js           # Release event + getPoolKey
+│   │       ├── claimer.js           # DECAY.collectFees
+│   │       └── index.js
 │   ├── ui/
 │   │   ├── dom.js                   # Tiny DOM helpers (no framework)
 │   │   └── styles.css               # Dark theme, responsive
@@ -162,54 +171,65 @@ ClaimApp/
 │   └── vendor/
 │       ├── ethers.js                # Bundled ethers.js v6
 │       └── README.md
+├── test/
+│   ├── ping-router.mjs              # RPC sanity check
+│   ├── scan-treasury.mjs            # Full Clanker scan smoke test
+│   ├── scan-bankr.mjs               # Full Bankr scan smoke test
+│   ├── stress-scan.mjs              # Determinism stress test
+│   ├── bench-cors.mjs               # Browser CORS regression check
+│   ├── bench-providers.mjs          # Provider latency benchmark
+│   ├── bench-chunk-sizes.mjs        # Max eth_getLogs range per provider
+│   └── serve.mjs                    # Zero-dep local static server
 ├── .github/
+│   ├── CODEOWNERS
+│   ├── ISSUE_TEMPLATE/              # bug / feature / security
+│   ├── pull_request_template.md
 │   └── workflows/
+│       ├── ci.yml                   # Syntax + CORS regression checks
 │       └── deploy-pages.yml         # Auto-deploy to GitHub Pages
-├── .gitignore                       # Excludes secrets, keys, .env
-├── .env.example                     # Dev-only, never committed
+├── CONTRIBUTING.md                  # Team structure + issue-driven flow
+├── SECURITY.md                      # Vulnerability reporting
+├── .gitignore                       # Excludes secrets, keys, .env, CLAUDE.md
+├── .env.example                     # Doc-only, no runtime role
 └── README.md
 ```
 
 ## Running locally
 
-**Option A — open directly:**
+Clone the repo and serve the root with any static server — no dependencies:
 
 ```bash
 git clone https://github.com/lordbasilaiassistant-sudo/ClaimApp.git
 cd ClaimApp
-# Open index.html in your browser.
-# On Windows: start index.html
-# On macOS:   open index.html
-# On Linux:   xdg-open index.html
+node test/serve.mjs 8000
+# → http://localhost:8000
 ```
 
-ES modules require `file://` → some browsers block that. If so, use Option B.
-
-**Option B — any static server:**
-
-```bash
-# Python
-python -m http.server 8000
-# or Node
-npx serve .
-```
-
-Then open `http://localhost:8000`.
+Or use any other static server (`python -m http.server`, `npx serve`, etc).
+ES modules require an HTTP server — `file://` is blocked by modern browsers.
 
 ## Using the app
 
-1. **Load a wallet.** Either paste a public address (read-only — you can scan
-   but not claim) or paste a private key (full claim ability). The key input
-   is a `type=password` field; toggle "Reveal" if you need to verify.
-2. **Scan.** Click "Scan Clanker". It'll query `TokenCreated` events from every
-   configured factory, then batch-read claimable balances via Multicall3.
+1. **Load a wallet.** Three modes:
+   - **Address (read-only)** — paste any public address to scan without
+     signing ability
+   - **Private key (claim enabled)** — paste a 0x-prefixed 64-hex key.
+     Stays in JavaScript memory only, never written to storage, wiped on
+     refresh
+   - Injected wallet support (MetaMask, etc) is [planned](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/12)
+2. **Scan.** Click "Scan all sources". The scanner runs each registered
+   source (Clanker + Bankr) and displays everything in one merged list.
 3. **Review.** You'll see:
-   - An **aggregate WETH card** (WETH accrued across all launches — Clanker
-     pays fees on both the token side and WETH side).
-   - A **per-token list** with claimable amounts, token version, and Basescan
-     links.
-4. **Claim.** Per-row buttons run `LpLocker.collectRewards` → `FeeLocker.claim`.
-   Each step is a separate on-chain transaction. Gas is paid from your wallet.
+   - Summary line with item count and how many have pending claims
+   - Optional subtle info note if 1-5 chunks had transient RPC hiccups
+   - Optional red warning if more than 5 chunks failed
+   - Per-source WETH aggregate card (Clanker only — Bankr is per-pool)
+   - Per-token rows with claimable amounts, version badge, and claim button
+4. **Claim.** Per-row buttons route to the correct source's claim flow.
+   Clanker v4 runs `LpLocker.collectRewardsWithoutUnlock` →
+   `FeeLocker.claim`. Clanker legacy runs `factory.claimRewards(token)`.
+   Bankr runs `DECAY.collectFees(poolId)`. Each call shows a
+   confirmation dialog with the recipient address before broadcast.
 
 ## Security model
 
@@ -223,54 +243,80 @@ This is an app that handles private keys. Here's the threat model:
 | Key persistence across sessions     | Held in JS closure; wiped on `beforeunload`.   |
 | XSS                                 | No `innerHTML` with user data; CSP blocks inline scripts. |
 | Clickjacking                        | CSP `frame-ancestors 'none'`.                  |
-| Rogue GitHub Action injecting code  | `.github/workflows/` is reviewed in PRs; deploy job has zero permissions beyond Pages. |
+| Wrong-key claim to unintended wallet | Claim confirmation dialog shows recipient address before signing. |
+| Malicious token name / decimals     | Per-read soft caps (16-char symbol, 64-char name, max 36 decimals). |
+| Rogue GitHub Action injecting code  | Workflows are reviewed in PRs; deploy job has minimum permissions. |
 
 **What this app will NOT protect you from:**
 - A compromised device (keyloggers, clipboard sniffers, browser extensions
-  with access to your tabs).
+  with access to your tabs)
 - A fake copy of this site at a different URL. **Always verify the URL.**
-- You pasting a private key on a shared computer.
+- You pasting a private key on a shared computer
 
-If any of those are a concern, clone the repo and run it locally on a trusted
-machine with no extensions.
+If any of those are a concern, clone the repo and run it locally on a
+trusted machine with no extensions.
 
-## Adding a new source
-
-Every claim platform lives in its own folder under `src/sources/`. To add one:
-
-1. Create `src/sources/<name>/`.
-2. Add `config.js`, `abis.js`, `scanner.js`, `claimer.js`, `index.js`.
-3. The `index.js` must default-export an object matching the `SourceAdapter`
-   contract in [`src/sources/index.js`](src/sources/index.js).
-4. Import it in `src/sources/index.js` and push it to `SOURCES`.
-5. The UI will automatically render its scan results.
-
-Planned sources:
-- [ ] Bankr (Doppler V4 launches)
-- [ ] Zora (creator rewards)
-- [ ] LP fee sweepers for arbitrary Uniswap V3/V4 positions
-- [ ] Merkle-based airdrop claimers
-
-Open a PR if you want to add one.
+Security findings are welcome via [SECURITY.md](./SECURITY.md). Critical
+issues go to the [private Security Advisory](https://github.com/lordbasilaiassistant-sudo/ClaimApp/security/advisories/new),
+not public issues.
 
 ## Contributing
 
-Pull requests welcome. Keep it small, keep it audit-friendly, keep it
-dependency-free. No frameworks, no build step, no new runtime dependencies
-without a security rationale.
+We use an issue-driven workflow. See [CONTRIBUTING.md](./CONTRIBUTING.md)
+for the team structure and full flow. TL;DR:
+
+1. [Open an issue](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/new/choose)
+   using one of the templates (bug / feature / security)
+2. Pick a pending issue to work on (or wait for triage). **Good first
+   issues** are labeled accordingly
+3. Send a PR that references the issue with `Fixes #N`
+4. CI runs syntax checks + CORS regression tests on every PR
+5. On merge: auto-deploys to GitHub Pages and closes the issue
+
+Design invariants that PRs must preserve:
+- No backend server, no runtime CDN, no telemetry
+- No `localStorage` / `sessionStorage` / `cookie` writes of wallet data
+- No `innerHTML` with user-controlled strings
+- New `connect-src` URLs must be added to BOTH `src/services/rpc/providers.js`
+  AND `index.html`'s CSP meta tag
+- Providers must pass `node test/bench-cors.mjs`
+
+## Adding a new source
+
+Every claim platform lives in its own folder under `src/sources/`. See
+[`src/sources/clanker/`](src/sources/clanker/) and
+[`src/sources/bankr/`](src/sources/bankr/) as reference implementations.
+Required files:
+
+```
+src/sources/<name>/
+├── config.js      # addresses, block windows, constants
+├── abis.js        # contract ABIs (human-readable format)
+├── scanner.js     # discovery + balance queries (read-only)
+├── claimer.js     # claim execution (signer required)
+└── index.js       # default export implementing SourceAdapter
+```
+
+The adapter must implement `scan(address, options)` and should implement
+`claimItem(item, signer)`. Register it in
+[`src/sources/index.js`](src/sources/index.js) by importing and pushing
+to `SOURCES`.
+
+Open backlog for new sources: [#14 Zora](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/14),
+[#15 Uniswap V3/V4 LP sweeper](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/15).
 
 ## Made by THRYX
 
-ClaimApp is built by the team behind [**thryx.fun**](https://thryx.fun), the
-free gasless token launchpad on Base. Launch your own token in ~30 seconds
-with zero gas fees, automatic graduation to Uniswap V4, and 70% of trading
-fees paid to creators. If ClaimApp helped you find your launches, come
-launch your next one on THRYX.
+ClaimApp is built by the team behind [**thryx.fun**](https://thryx.fun),
+the free gasless token launchpad on Base. Launch your own token in
+~30 seconds with zero gas fees, automatic graduation to Uniswap V4,
+and 70% of trading fees paid to creators. If ClaimApp helped you find
+your launches, come launch your next one on THRYX.
 
 ## Donations
 
-If this tool saved you an afternoon of Basescan scrolling, consider sending
-a tip to the treasury:
+If this tool saved you an afternoon of Basescan scrolling, consider
+sending a tip to the treasury:
 
 ```
 0x7a3E312Ec6e20a9F62fE2405938EB9060312E334
@@ -284,6 +330,6 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## Disclaimer
 
-Not affiliated with Clanker, Uniswap, or any launched token. Not financial
-advice. Verify every transaction in your wallet before signing. Use at your
-own risk.
+Not affiliated with Clanker, Bankr, Doppler, Uniswap, or any launched
+token. Not financial advice. Verify every transaction in your wallet
+before signing. Use at your own risk.
