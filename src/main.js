@@ -12,7 +12,7 @@ import {
   getSigner,
   onAddressChange,
 } from './services/wallet.js';
-import { SOURCES } from './sources/index.js';
+import { SOURCES, getSource } from './sources/index.js';
 import clanker from './sources/clanker/index.js';
 import { getRpcStats } from './services/provider.js';
 import {
@@ -444,10 +444,18 @@ async function handleClaimItem(item, btn) {
   const recipient = await signer.getAddress();
   if (!confirmClaim(recipient, `Claim ${item.symbol} fees (${item.tokenAddress.slice(0, 10)}…)`)) return;
 
+  // Route to the right source adapter based on item.source. This is how
+  // multi-source claims work — each source owns its own claimItem.
+  const source = getSource(item.source);
+  if (!source || typeof source.claimItem !== 'function') {
+    window.alert(`No claim handler for source: ${item.source}`);
+    return;
+  }
+
   btn.disabled = true;
   btn.textContent = 'Claiming…';
   try {
-    const res = await clanker.claimItem(item, signer);
+    const res = await source.claimItem(item, signer);
     if (res.ok) {
       btn.textContent = '✓';
       setTimeout(() => runScan(), 4000);

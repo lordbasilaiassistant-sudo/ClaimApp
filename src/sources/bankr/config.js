@@ -1,36 +1,23 @@
 // src/sources/bankr/config.js
-// Bankr / Doppler V4 contract addresses on Base.
+// Doppler V4 (used by Bankr) contract addresses on Base mainnet.
 //
-// STATUS: STUB — needs on-chain research before this module is functional.
-// The scanner currently returns a single informational row explaining the
-// limitation rather than attempting (and failing) to claim.
-//
-// What we know:
-//   * Bankr launches use Doppler V4, which is built on Uniswap V4 hooks.
-//   * Pool IDs are bytes32 keccak hashes of the PoolKey struct.
-//   * Fee collection is intended to be permissionless via Doppler's locker
-//     (comment in Agent0/tools/claim-rewards.js says
-//     "Doppler `collectFees(poolId)` call is permissionless").
-//   * Bankr's fee claim API (`bankr fees claim`) is off-chain and not
-//     usable from a browser.
-//
-// What we need:
-//   * The Doppler airlock / fee locker contract address on Base mainnet
-//   * The exact function signature of the on-chain claim call
-//   * The event emitted on Doppler launch (for scanner-side discovery)
-//   * A way to resolve a wallet → its Bankr/Doppler poolIds without a
-//     centralized indexer (on-chain event scan filter by creator topic)
+// Verified against Agent0/BankrRewards/scan-and-claim.js which is a
+// production script that successfully claims fees from these contracts.
 
 export const BANKR = {
   chainId: 8453,
 
-  // TODO: fill in Doppler airlock / locker on Base mainnet
-  airlock: null,
+  // Doppler V4 "DecayMulticurve" contract — THE contract for Bankr launches.
+  // It's both a Uniswap V4 hook AND the fee locker. Pool state lives here.
+  decay: '0xd59ce43e53d69f190e15d9822fb4540dccc91178',
 
-  // Doppler uses Uniswap V4 under the hood. These are the known V4 addresses
-  // on Base mainnet (same as Clanker v4 uses).
+  // Uniswap V4 PoolManager on Base (shared with Clanker v4).
   poolManager: '0x498581fF718922c3f8e6A244956aF099B2652b2b',
-  positionManager: '0x7C5f5A4bBd8fD63184577525326123B519429bDc',
 
   weth: '0x4200000000000000000000000000000000000006',
+
+  // Scan window for Release events. The BankrRewards/scan-and-claim.js
+  // script defaults to 42_100_000 which is approximately when Doppler
+  // started seeing activity on Base. Safe lower bound: 42_000_000.
+  startBlock: 42_000_000n,
 };

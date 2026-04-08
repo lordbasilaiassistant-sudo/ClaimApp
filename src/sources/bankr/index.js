@@ -1,59 +1,44 @@
 // src/sources/bankr/index.js
-// Bankr / Doppler V4 source adapter — STUB implementation.
+// Bankr / Doppler V4 source adapter. Live — no longer a stub.
 //
-// Registered in src/sources/index.js but currently returns a placeholder
-// item that tells the user why this source isn't scanning real data yet.
-// Once we have the Doppler airlock contract address and claim function
-// signature, replace the stub scan() with a real event-based discovery
-// path. See issue #8 in the repo for the research backlog.
+// Discovery: Release events on DECAY filtered by beneficiary.
+// Claim: DECAY.collectFees(poolId). Permissionless.
+// See scanner.js and claimer.js for implementation details.
+
+import { BANKR } from './config.js';
+import { scan as scanBankr } from './scanner.js';
+import { claimItem } from './claimer.js';
 
 const bankr = {
   id: 'bankr',
   name: 'Bankr / Doppler V4',
-  chainId: 8453,
+  chainId: BANKR.chainId,
   description:
-    'Discover and claim LP fees from Bankr launches (Doppler V4 on Base). ' +
-    'Coming soon — needs on-chain contract info.',
+    'Discover and claim LP fees from your Bankr / Doppler V4 launches on Base.',
 
   /**
-   * Stub scan. Returns a single informational item so users see that the
-   * source is registered but not yet operational. This is better than
-   * silently returning empty — users would otherwise think they have
-   * no Bankr launches even if they do.
+   * Scan a wallet for Bankr pools where it has received rewards.
+   * Only catches pools that have been claimed from at least once.
+   * New launches (never claimed) won't appear yet.
    */
-  async scan(address) {
-    return {
-      source: 'bankr',
-      address,
-      items: [
-        {
-          source: 'bankr',
-          id: 'bankr:stub',
-          version: 'stub',
-          name: 'Bankr / Doppler V4 support is a work in progress',
-          symbol: 'WIP',
-          tokenAddress: '0x0000000000000000000000000000000000000000',
-          claimable: [],
-          legacyUnknownBalance: false,
-          meta: {
-            note: 'See issue #8 on GitHub — needs Doppler airlock address + claim ABI.',
-            stub: true,
-          },
-        },
-      ],
-      wethClaimable: 0n,
-      failedRanges: [],
-      complete: true,
-    };
+  async scan(address, options = {}) {
+    try {
+      const result = await scanBankr(address, options.onLog);
+      return result;
+    } catch (e) {
+      return {
+        source: 'bankr',
+        address,
+        items: [],
+        wethClaimable: 0n,
+        failedRanges: [],
+        complete: false,
+        error: e.shortMessage || e.message || 'bankr scan failed',
+      };
+    }
   },
 
-  async claimItem(item) {
-    return {
-      ok: false,
-      txs: [],
-      error: 'Bankr claims not yet supported. See issue #8 on GitHub.',
-    };
-  },
+  claimItem,
 };
 
 export default bankr;

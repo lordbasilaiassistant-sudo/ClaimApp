@@ -8,11 +8,7 @@
 //   3. Add `import x from './<name>/index.js';` here and push to SOURCES
 
 import clanker from './clanker/index.js';
-// import bankr from './bankr/index.js';
-// ^ Bankr / Doppler V4 source is a stub (see src/sources/bankr/ and
-// GitHub issue #8). Not registered until on-chain contract addresses
-// and claim ABI are available. Uncomment and push to SOURCES below
-// once the research is done.
+import bankr from './bankr/index.js';
 
 /**
  * SourceAdapter contract — every source module MUST export an object with:
@@ -56,7 +52,7 @@ import clanker from './clanker/index.js';
  *   }
  */
 
-export const SOURCES = [clanker];
+export const SOURCES = [clanker, bankr];
 
 export function getSource(id) {
   return SOURCES.find((s) => s.id === id) || null;
