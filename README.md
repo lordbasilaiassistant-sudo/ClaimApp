@@ -1,5 +1,9 @@
 # ClaimApp
 
+> **Made by [THRYX](https://thryx.fun)** — the free, gasless token launchpad on Base.
+> Launch tokens for free, graduate to Uniswap V4, earn 70% of trading fees as the creator.
+> [→ try thryx.fun](https://thryx.fun)
+
 **A universal on-chain claim finder and claimer. One wallet, every platform.**
 
 ClaimApp is a zero-backend web app that scans multiple EVM platforms for
@@ -254,6 +258,14 @@ Open a PR if you want to add one.
 Pull requests welcome. Keep it small, keep it audit-friendly, keep it
 dependency-free. No frameworks, no build step, no new runtime dependencies
 without a security rationale.
+
+## Made by THRYX
+
+ClaimApp is built by the team behind [**thryx.fun**](https://thryx.fun), the
+free gasless token launchpad on Base. Launch your own token in ~30 seconds
+with zero gas fees, automatic graduation to Uniswap V4, and 70% of trading
+fees paid to creators. If ClaimApp helped you find your launches, come
+launch your next one on THRYX.
 
 ## Donations
 

@@ -38,6 +38,30 @@
   </header>
 
   <main class="app-main">
+    <!-- Sponsor strip: clickable ad for thryx.fun, the sister product.
+         Static <a> — no tracking, no runtime fetch, no iframe. Opens in new tab. -->
+    <a class="thryx-ad" href="https://thryx.fun" target="_blank" rel="noopener noreferrer" aria-label="THRYX — launch tokens on Base for free">
+      <span class="thryx-ad-label">Sponsored</span>
+      <svg class="thryx-ad-mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="thryx-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#7ee787"/>
+            <stop offset="100%" stop-color="#6bb6ff"/>
+          </linearGradient>
+        </defs>
+        <path d="M16 2 L30 9 L30 23 L16 30 L2 23 L2 9 Z" fill="url(#thryx-grad)" opacity="0.2" stroke="url(#thryx-grad)" stroke-width="1.5"/>
+        <text x="16" y="21" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="url(#thryx-grad)">T</text>
+      </svg>
+      <div class="thryx-ad-copy">
+        <div class="thryx-ad-headline">Launch tokens on Base — <span class="thryx-ad-free">free.</span></div>
+        <div class="thryx-ad-sub">Zero gas fees. Graduates to Uniswap V4. Creators earn 70% of trading fees.</div>
+      </div>
+      <div class="thryx-ad-cta">
+        thryx.fun
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3 L9 3 L9 9 M9 3 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+      </div>
+    </a>
+
     <!-- SECURITY BANNER — always visible -->
     <section class="banner security-banner" role="note" aria-label="Security notice">
       <strong>Your keys, your device.</strong> This app runs entirely in your browser.
@@ -134,7 +158,11 @@
   </main>
 
   <footer class="app-footer">
-    <small>ClaimApp is open source (MIT). Not affiliated with Clanker. Use at your own risk — verify every transaction.</small>
+    <small>
+      ClaimApp is open source (MIT). Not affiliated with Clanker. Use at your own risk — verify every transaction.
+      <br/>
+      Made by <a href="https://thryx.fun" target="_blank" rel="noopener noreferrer" class="thryx-credit">THRYX</a> — launch tokens on Base for free.
+    </small>
   </footer>
 
   <!-- Entry point — ES module -->
