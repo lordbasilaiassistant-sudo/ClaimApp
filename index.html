@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="description" content="ClaimApp — a universal on-chain claim finder. Scan multiple platforms for anything your wallet can claim. Private-key-local, open source, no backend." />
+  <meta name="robots" content="noindex" />
+
+  <!-- Strict CSP: only our own scripts, no inline JS, no remote fetches except Base RPC.
+       Users can override the RPC in settings; keep this list tight by default. -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self';
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' data:;
+    font-src 'self';
+    connect-src 'self' https://mainnet.base.org https://base.llamarpc.com https://base-rpc.publicnode.com https://1rpc.io https://basescan.org;
+    form-action 'none';
+    base-uri 'none';
+    frame-ancestors 'none';
+  " />
+
+  <title>ClaimApp — Universal On-Chain Claim Finder</title>
+  <link rel="stylesheet" href="src/ui/styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="logo-mark" aria-hidden="true">◈</span>
+      <h1>ClaimApp</h1>
+      <span class="tag">universal claim finder</span>
+    </div>
+    <nav class="app-nav">
+      <a href="https://github.com/" id="repo-link" target="_blank" rel="noopener noreferrer">GitHub</a>
+    </nav>
+  </header>
+
+  <main class="app-main">
+    <!-- SECURITY BANNER — always visible -->
+    <section class="banner security-banner" role="note" aria-label="Security notice">
+      <strong>Your keys, your device.</strong> This app runs entirely in your browser.
+      Private keys never leave this tab, are never stored, and are wiped on refresh.
+      <a href="#security" class="banner-link">Read the security model →</a>
+    </section>
+
+    <!-- STEP 1: Wallet input -->
+    <section class="card" id="wallet-card">
+      <header class="card-header">
+        <h2>1. Load your wallet</h2>
+        <p class="muted">Enter a <strong>public address</strong> to scan read-only, or a <strong>private key</strong> to also claim. Keys stay in memory only.</p>
+      </header>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" role="tab" aria-selected="true" data-tab="address">Address (read-only)</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="private-key">Private key (claim enabled)</button>
+      </div>
+
+      <div class="tab-panel active" data-panel="address">
+        <label for="address-input" class="sr-only">Wallet address</label>
+        <input type="text" id="address-input" placeholder="0x… wallet address" spellcheck="false" autocomplete="off" />
+        <button class="btn primary" id="load-address-btn">Load address</button>
+      </div>
+
+      <div class="tab-panel" data-panel="private-key">
+        <label for="key-input" class="sr-only">Private key</label>
+        <input type="password" id="key-input" placeholder="0x… private key (64 hex chars)" spellcheck="false" autocomplete="off" />
+        <div class="row">
+          <button class="btn primary" id="load-key-btn">Load key</button>
+          <label class="checkbox">
+            <input type="checkbox" id="reveal-key" />
+            <span>Reveal</span>
+          </label>
+        </div>
+        <p class="warn">
+          ⚠ Only paste a private key on a device you trust. Double-check the URL
+          in your address bar. This app never transmits keys — verify by
+          checking the Network tab in devtools.
+        </p>
+      </div>
+
+      <div class="wallet-status" id="wallet-status" aria-live="polite"></div>
+    </section>
+
+    <!-- STEP 2: Scan -->
+    <section class="card" id="scan-card" hidden>
+      <header class="card-header">
+        <h2>2. Scan for claimables</h2>
+        <p class="muted">Each source runs independently. Currently enabled: <strong>Clanker</strong>. More sources coming as modules are added.</p>
+      </header>
+      <button class="btn primary large" id="scan-btn">Scan all sources</button>
+      <div class="scan-progress" id="scan-progress" aria-live="polite"></div>
+    </section>
+
+    <!-- STEP 3: Results -->
+    <section class="card" id="results-card" hidden>
+      <header class="card-header">
+        <h2>3. Your claimables</h2>
+        <p class="muted" id="results-summary"></p>
+      </header>
+
+      <div class="weth-card" id="weth-card" hidden>
+        <div>
+          <div class="weth-label">Aggregate WETH fees (all launches)</div>
+          <div class="weth-amount" id="weth-amount">—</div>
+        </div>
+        <button class="btn success" id="claim-weth-btn" hidden>Claim WETH</button>
+      </div>
+
+      <div class="token-list" id="token-list"></div>
+    </section>
+
+    <!-- SECURITY MODEL -->
+    <section class="card" id="security">
+      <header class="card-header">
+        <h2>Security model</h2>
+      </header>
+      <ul class="sec-list">
+        <li><strong>No backend.</strong> This site is 100% static HTML/JS/CSS served from GitHub Pages. There is no server to compromise.</li>
+        <li><strong>Keys stay local.</strong> Private keys are held in a JavaScript closure, never written to localStorage, sessionStorage, cookies, or the DOM.</li>
+        <li><strong>No telemetry.</strong> Zero analytics, zero tracking pixels, zero third-party scripts.</li>
+        <li><strong>No external fetches.</strong> A strict Content-Security-Policy blocks every outbound request except Base RPC endpoints you approve.</li>
+        <li><strong>Auditable.</strong> ~500 lines of handwritten JS. Read it all in an afternoon: <a href="https://github.com/" target="_blank" rel="noopener noreferrer">source on GitHub</a>.</li>
+        <li><strong>Wiped on exit.</strong> Closing or refreshing the tab clears the wallet. No "remember me" checkbox exists.</li>
+        <li><strong>Run local if you prefer.</strong> Clone the repo and open <code>index.html</code> directly — no install needed.</li>
+      </ul>
+      <p class="muted">
+        Donations keep development going:
+        <code class="donation">0x7a3E312Ec6e20a9F62fE2405938EB9060312E334</code>
+        <button class="btn ghost small" id="copy-donation">Copy</button>
+      </p>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <small>ClaimApp is open source (MIT). Not affiliated with Clanker. Use at your own risk — verify every transaction.</small>
+  </footer>
+
+  <!-- Entry point — ES module -->
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

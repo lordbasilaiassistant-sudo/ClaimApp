@@ -1,0 +1,104 @@
+# ===== SECURITY — NEVER COMMIT =====
+# Private keys, mnemonics, wallets
+*.key
+*.pem
+*.p12
+*.pfx
+*privatekey*
+*private-key*
+*private_key*
+*mnemonic*
+*seed-phrase*
+*seed_phrase*
+keystore/
+wallets/
+*.wallet
+
+# Env files (all variants)
+.env
+.env.*
+!.env.example
+*.env.local
+*.env.development
+*.env.production
+
+# Secrets / credentials
+secrets/
+credentials/
+*.secret
+*.secrets
+*_secret*
+config.local.*
+config.private.*
+
+# ===== BUILD / DEPS =====
+node_modules/
+dist/
+build/
+out/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+.vite/
+.turbo/
+
+# Package manager
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+package-lock.json.bak
+
+# ===== EDITOR / OS =====
+.vscode/
+!.vscode/settings.recommended.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== LOGS / REPORTS =====
+logs/
+*.log
+coverage/
+.nyc_output/
+*.pid
+*.seed
+*.pid.lock
+
+# ===== LOCAL STATE =====
+state/
+scratch/
+tmp/
+temp/
+.tmp/
+.temp/
+
+# ===== CLAIMAPP-SPECIFIC =====
+# Never commit any on-chain scan results, user addresses, or claim logs
+scan-results/
+claims-log/
+user-data/
+*.claims.json
+
+# ===== CLAUDE / AI TOOLING =====
+# Everything Claude-related stays local — never committed to a public repo
+CLAUDE.md
+CLAUDE.local.md
+**/CLAUDE.md
+.claude/
+.claude-*
+claude.md
+claude.local.md
+.anthropic/
+memory/
+.cursor/
+.cursorrules
+.aider*
+.github/copilot-*
+
