@@ -46,11 +46,23 @@ export const CLANKER_V4_FACTORY_ABI = [
   'event TokenCreated(address msgSender, address indexed tokenAddress, address indexed tokenAdmin, string tokenImage, string tokenName, string tokenSymbol, string tokenMetadata, string tokenContext, int24 startingTick, address poolHook, bytes32 poolId, address pairedToken, address locker, address mevModule, uint256 extensionsSupply, address[] extensions)',
 ];
 
-// ===== Clanker v3_1 Factory — TokenCreated event =====
-// v3_1 event has a different shape. Based on clanker-sdk v3 ABI.
-// Fields indexed: tokenAddress, tokenAdmin, msgSender.
+// ===== Clanker v3 / v3_1 / v2 Factory — TokenCreated event =====
+// Verified against clanker-sdk write-clanker-contracts-*.d.ts — the older
+// event shape is distinct from v4 and has separate fields for the creator
+// admin vs the creator reward recipient (which is why fee recipients can
+// differ from deployers in legacy launches).
+//
+// Indexed topics (for RPC-side filtering):
+//   topic[1] = tokenAddress (the new token)
+//   topic[2] = creatorAdmin (deployer/admin of this launch)
+//   topic[3] = interfaceAdmin (the UI/platform that brokered the launch)
+//
+// Non-indexed payload includes `creatorRewardRecipient` — the wallet that
+// actually receives fees. This can be different from creatorAdmin, which
+// is why a pure "scan by admin" approach misses launches where the current
+// wallet is only the recipient. See CLAUDE.md § Known limitations.
 export const CLANKER_V3_FACTORY_ABI = [
-  'event TokenCreated(address indexed msgSender, address indexed tokenAddress, address indexed tokenAdmin, string tokenImage, string tokenName, string tokenSymbol, string tokenMetadata, string tokenContext, int24 startingTick, uint256 vault, address pairedToken, address locker, address mevModule)',
+  'event TokenCreated(address indexed tokenAddress, address indexed creatorAdmin, address indexed interfaceAdmin, address creatorRewardRecipient, address interfaceRewardRecipient, uint256 positionId, string name, string symbol, int24 startingTickIfToken0IsNewToken, string metadata, uint256 amountTokensBought, uint256 vaultDuration, uint8 vaultPercentage, address msgSender)',
 ];
 
 // ===== ERC20 (minimal) =====
