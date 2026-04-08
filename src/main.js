@@ -166,6 +166,21 @@ function renderResults(scans) {
     `${claimableCount} with claimable balances.`
   ));
 
+  // Warn prominently if any scan came back incomplete (chunks failed even
+  // after retries). Incomplete scans explain "same wallet, different results"
+  // behavior — without this warning users would see a silently-shrunk list.
+  const incompleteScans = scans.filter((s) => s && s.complete === false);
+  if (incompleteScans.length > 0) {
+    const warnBanner = el('div', { className: 'incomplete-warn' }, [
+      el('strong', {}, '⚠ Scan incomplete — '),
+      document.createTextNode(
+        incompleteScans.map((s) => `${s.source}: ${s.failedRanges?.length || 0} chunks failed`).join(', ') +
+        '. Results may be missing some launches. Click Scan again to retry — this is usually a transient RPC issue.'
+      ),
+    ]);
+    summary.appendChild(warnBanner);
+  }
+
   // Clanker-specific WETH aggregate card (it's the only source today that
   // has a shared reward token across items). Other sources can add similar
   // aggregate cards in future.
@@ -189,39 +204,81 @@ function renderResults(scans) {
     show(wethCard, false);
   }
 
-  // Render each item row
+  // Render each item row. Per-item try/catch so a single bad item can't
+  // break the whole list — this used to be the cause of "it shows some,
+  // not all" symptoms.
   if (totalCount === 0) {
     list.appendChild(el('div', { className: 'muted' }, 'No claimable items found across any source.'));
     return;
   }
 
+  let renderedCount = 0;
+  let failedCount = 0;
   for (const item of allItems) {
-    list.appendChild(renderTokenRow(item));
+    try {
+      list.appendChild(renderTokenRow(item));
+      renderedCount++;
+    } catch (e) {
+      failedCount++;
+      // Render a minimal fallback row so the user at least sees the token exists
+      try {
+        const fallback = el('div', { className: 'token-row fallback' }, [
+          el('div', { className: 'symbol' }, item?.symbol || '???'),
+          el('div', { className: 'addr' }, item?.tokenAddress || 'unknown'),
+          el('div', { className: 'claimable-amt zero' }, 'render error'),
+          el('div', {}, ''),
+        ]);
+        list.appendChild(fallback);
+      } catch {
+        /* even the fallback failed — skip this item entirely */
+      }
+    }
   }
+
+  // Add a count confirmation line so the user can verify render matches scan
+  const countLine = el('div', { className: 'muted render-count' }, [
+    document.createTextNode(`Rendered ${renderedCount} of ${allItems.length} items`),
+    ...(failedCount > 0 ? [document.createTextNode(` (${failedCount} render errors)`)] : []),
+  ]);
+  list.appendChild(countLine);
 }
 
 function renderTokenRow(item) {
-  const isLegacy = item.version !== 'v4';
-  const hasClaimable = item.claimable.some((c) => c.amount > 0n);
+  // Defensive: coerce all displayed fields to strings so nothing crashes
+  // the document.createTextNode() call downstream.
+  const version = String(item?.version ?? '?');
+  const isLegacy = version !== 'v4';
+  const symbol = String(item?.symbol ?? '???');
+  const name = String(item?.name ?? '');
+  const tokenAddress = String(item?.tokenAddress ?? '');
+  const claimableArr = Array.isArray(item?.claimable) ? item.claimable : [];
 
-  const claimableText = item.claimable.length === 0
+  const hasClaimable = claimableArr.some((c) => c && typeof c.amount === 'bigint' && c.amount > 0n);
+
+  const claimableText = claimableArr.length === 0
     ? (isLegacy ? 'legacy — see Basescan' : '0')
-    : item.claimable
-        .map((c) => `${formatAmount(c.amount, c.decimals)} ${c.symbol}`)
+    : claimableArr
+        .map((c) => {
+          try {
+            return `${formatAmount(c.amount, c.decimals)} ${c.symbol || '???'}`;
+          } catch {
+            return '?';
+          }
+        })
         .join(' + ');
 
   const left = el('div', { className: 'meta' }, [
-    el('div', { className: 'symbol' }, item.symbol),
-    el('div', { className: 'name' }, item.name || ''),
+    el('div', { className: 'symbol' }, symbol),
+    el('div', { className: 'name' }, name),
   ]);
 
   const middle = el('div', {}, [
     el('a', {
       className: 'addr',
-      href: basescanTokenUrl(item.tokenAddress),
+      href: tokenAddress ? basescanTokenUrl(tokenAddress) : '#',
       target: '_blank',
       rel: 'noopener noreferrer',
-    }, shortAddress(item.tokenAddress)),
+    }, shortAddress(tokenAddress)),
   ]);
 
   const amount = el('div', {
@@ -229,14 +286,14 @@ function renderTokenRow(item) {
   }, claimableText);
 
   const actions = el('div', { className: 'actions' });
-  const version = el('span', { className: 'version-badge' }, item.version);
-  actions.appendChild(version);
+  const versionBadge = el('span', { className: 'version-badge' }, version);
+  actions.appendChild(versionBadge);
 
-  if (canSign() && item.version === 'v4') {
+  if (canSign() && version === 'v4') {
     const btn = el('button', {
       className: 'btn small success',
-      onclick: () => handleClaimItem(item, btn),
     }, 'Claim');
+    btn.addEventListener('click', () => handleClaimItem(item, btn));
     actions.appendChild(btn);
   }
 

@@ -24,13 +24,15 @@ const clanker = {
    */
   async scan(address, options = {}) {
     try {
-      const launches = await discoverLaunches(address, options);
+      const { launches, failedRanges } = await discoverLaunches(address, options);
       if (launches.length === 0) {
         return {
           source: 'clanker',
           address,
           items: [],
           wethClaimable: 0n,
+          failedRanges,
+          complete: failedRanges.length === 0,
         };
       }
       options.onLog?.(`querying claimable balances for ${launches.length} tokens…`);
@@ -40,6 +42,8 @@ const clanker = {
         address,
         items,
         wethClaimable,
+        failedRanges,
+        complete: failedRanges.length === 0,
       };
     } catch (e) {
       return {
@@ -47,6 +51,8 @@ const clanker = {
         address,
         items: [],
         wethClaimable: 0n,
+        failedRanges: [],
+        complete: false,
         error: e.shortMessage || e.message || 'scan failed',
       };
     }

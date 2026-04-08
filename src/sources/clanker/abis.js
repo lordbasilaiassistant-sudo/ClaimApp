@@ -6,10 +6,19 @@
 // Holds claimable fees indexed by (feeOwner, rewardToken).
 // Both WETH (paired side, shared across all launches) and each clanker token
 // accrue fees here after LpLocker.collectRewards() is called.
+//
+// The StoreTokens event is the KEY discovery mechanism: filter by feeOwner
+// to find every token that has EVER deposited fees for a wallet. This works
+// whether the wallet is the launch admin OR just a fee recipient.
 export const FEE_LOCKER_ABI = [
+  // Read functions
   'function availableFees(address feeOwner, address token) view returns (uint256)',
   'function feesToClaim(address feeOwner, address token) view returns (uint256 balance)',
+  // Write
   'function claim(address feeOwner, address token)',
+  // Events (both indexed by feeOwner as topic[1])
+  'event StoreTokens(address sender, address indexed feeOwner, address indexed token, uint256 balance, uint256 amount)',
+  'event ClaimTokens(address indexed feeOwner, address indexed token, uint256 amountClaimed)',
 ];
 
 // ===== LpLocker (v4) =====
@@ -20,6 +29,12 @@ export const LP_LOCKER_ABI = [
   'function collectRewards(address token)',
   'function collectRewardsWithoutUnlock(address token)',
 ];
+
+// Cached iface for the factory TokenCreated event — still used as a
+// SECONDARY discovery path alongside FeeLocker StoreTokens.
+// Launches you admin but nobody's collected fees on yet only show up here;
+// launches where fees have landed in FeeLocker also show up in StoreTokens.
+// Scanning both and merging gives complete coverage.
 
 // ===== Clanker v4 Factory — TokenCreated event =====
 // Event signature (from clanker-sdk@latest v4/index.js):

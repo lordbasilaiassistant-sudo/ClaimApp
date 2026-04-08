@@ -21,7 +21,8 @@
 import { LARGE_RANGE_LOG_PROVIDERS } from './providers.js';
 
 const REQUEST_TIMEOUT_MS = 20_000; // Large ranges can take longer — give them time
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 5; // per chunk, within a single pass
+const SECOND_PASS_DELAY_MS = 1500; // wait before retrying failed chunks
 
 /**
  * Round-robin counter for provider selection.
@@ -31,6 +32,17 @@ let _rrIndex = 0;
 /**
  * Fetch all logs for `filter` across a block range, chunking based on each
  * provider's max supported range. Routes through LARGE_RANGE_LOG_PROVIDERS.
+ *
+ * Correctness contract:
+ *   * First pass runs all chunks with per-chunk retry across providers.
+ *   * Any failed chunks get a SECOND pass with a fresh retry budget and a
+ *     cooldown — this catches transient network blips and 429s that resolve
+ *     after the rate-limit window expires.
+ *   * If any chunks still fail after the second pass, the return value
+ *     includes them in `failedRanges`. Callers MUST treat a non-empty
+ *     `failedRanges` as "results are incomplete" and warn the user.
+ *   * Deduplication by (txHash, logIndex) — merkle and tenderly can both
+ *     serve the same chunks on retries, so we might see duplicate logs.
  *
  * @param {{address: string, topics: (string | null | string[])[], fromBlock: number, toBlock: number}} filter
  * @param {(msg: string) => void} [onLog]
@@ -174,7 +186,59 @@ export async function fetchLogs(filter, onLog) {
   const workers = Array.from({ length: CONCURRENCY }, () => worker());
   await Promise.all(workers);
 
-  return { logs: allLogs, failedRanges };
+  // ===== Second pass: retry any failed ranges =====
+  if (failedRanges.length > 0) {
+    onLog?.(`    ⚠ first pass: ${failedRanges.length} chunks failed, retrying in ${SECOND_PASS_DELAY_MS}ms…`);
+    await sleep(SECOND_PASS_DELAY_MS);
+
+    const secondPassQueue = [...failedRanges];
+    failedRanges.length = 0;
+    let secondPassIdx = 0;
+
+    async function secondPassWorker() {
+      while (true) {
+        const i = secondPassIdx++;
+        if (i >= secondPassQueue.length) return;
+        const chunk = secondPassQueue[i];
+        const logs = await fetchChunkWithRetry(chunk);
+        if (logs === null) {
+          failedRanges.push(chunk);
+        } else {
+          allLogs.push(...logs);
+        }
+      }
+    }
+
+    const secondPassWorkers = Array.from(
+      { length: Math.min(CONCURRENCY, secondPassQueue.length) },
+      () => secondPassWorker(),
+    );
+    await Promise.all(secondPassWorkers);
+
+    if (failedRanges.length > 0) {
+      onLog?.(`    ⚠ second pass: ${failedRanges.length} chunks STILL failed — results incomplete`);
+    } else {
+      onLog?.(`    ✓ second pass recovered all failed chunks`);
+    }
+  }
+
+  // ===== Deduplicate logs by (transactionHash, logIndex) =====
+  // If merkle and tenderly both served overlapping requests (possible on
+  // retry paths), we'd have duplicate log entries. Dedupe so the caller
+  // always sees each on-chain event exactly once.
+  const seen = new Set();
+  const dedupedLogs = [];
+  for (const log of allLogs) {
+    const key = `${log.transactionHash}:${log.logIndex}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    dedupedLogs.push(log);
+  }
+  if (dedupedLogs.length !== allLogs.length) {
+    onLog?.(`    deduped ${allLogs.length - dedupedLogs.length} duplicate log entries`);
+  }
+
+  return { logs: dedupedLogs, failedRanges };
 }
 
 function sleep(ms) {

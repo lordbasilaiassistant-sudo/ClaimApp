@@ -1,18 +1,24 @@
 // src/sources/clanker/scanner.js
-// Discovers all Clanker tokens admin'd by a wallet via factory event logs,
-// then queries claimable fee balances from the FeeLocker.
+// Discovers all Clanker v4 tokens the wallet has any stake in, via TWO
+// parallel scan paths:
 //
-// Design notes:
-//   * Event filter by `tokenAdmin` (indexed) lets RPC do the work — we don't
-//     download every launch event. Public Base RPC is fine for this.
-//   * We chunk eth_getLogs to stay under public RPC limits (~10k blocks/call).
-//   * Chunks run through rpc-throttle for bounded concurrency + retry —
-//     public RPCs are a shared resource and abusing them hurts all users.
-//   * We check WETH once per wallet (shared across all launches) and the
-//     token side per-token in a single Multicall3 batch.
-//   * Legacy versions (v3, v3_1) don't use FeeLocker — they pay out via their
-//     own lpLocker.collectRewards() directly. We scan their factories for
-//     discovery but claimable balance queries are v4-only for now.
+//   A) FeeLocker StoreTokens events filtered by feeOwner == wallet
+//      → catches every token where fees have been deposited to the user,
+//        regardless of whether the user launched it. This is the PRIMARY
+//        discovery path because it's what users actually care about:
+//        "which tokens have rewards waiting for me?"
+//
+//   B) Factory TokenCreated events filtered by tokenAdmin == wallet
+//      → catches tokens the user launched themselves but for which nobody
+//        has called LpLocker.collectRewards() yet (so no fees in FeeLocker).
+//        Without this path, freshly-launched tokens would be invisible
+//        until someone collects.
+//
+// Union the two paths, dedupe by token address, then query current
+// FeeLocker balances via Multicall3.
+//
+// Legacy Clanker versions (v3, v3_1, v2) use a different locker contract
+// and are not yet supported for discovery OR claims.
 
 import { ethers } from '../../vendor/ethers.js';
 import { getProvider } from '../../services/provider.js';
@@ -23,155 +29,185 @@ import {
   FEE_LOCKER_ABI,
   ERC20_ABI,
   CLANKER_V4_FACTORY_ABI,
-  CLANKER_V3_FACTORY_ABI,
 } from './abis.js';
 
 const feeLockerIface = new ethers.Interface(FEE_LOCKER_ABI);
 const erc20Iface = new ethers.Interface(ERC20_ABI);
 const v4FactoryIface = new ethers.Interface(CLANKER_V4_FACTORY_ABI);
-const v3FactoryIface = new ethers.Interface(CLANKER_V3_FACTORY_ABI);
+
+// Cached topic hashes for event filters.
+const STORE_TOKENS_TOPIC = feeLockerIface.getEvent('StoreTokens').topicHash;
+const TOKEN_CREATED_TOPIC = v4FactoryIface.getEvent('TokenCreated').topicHash;
 
 /**
- * Scan factory events for all TokenCreated events where tokenAdmin matches
- * the target address. Uses the fast log-fetcher which routes through
- * large-range providers (merkle, tenderly) with 200k-block chunks.
- *
- * @param {string} factoryAddress
- * @param {ethers.Interface} iface
- * @param {string} tokenAdmin — checksummed wallet
- * @param {bigint} fromBlock
- * @param {bigint} toBlock
- * @param {(msg: string) => void} [onLog]
- * @returns {Promise<Array>}
+ * Path A — scan FeeLocker StoreTokens events.
+ * Catches tokens where the wallet has actually received fees.
  */
-async function scanFactoryForAdmin(factoryAddress, iface, tokenAdmin, fromBlock, toBlock, onLog) {
-  // Build the raw eth_getLogs filter. topic[0] = event signature hash,
-  // topic[2] = tokenAdmin (indexed). topic[1] is tokenAddress (indexed)
-  // which we leave as null to match any token.
-  const eventFragment = iface.getEvent('TokenCreated');
-  const topic0 = eventFragment.topicHash;
-  // Pad the address to 32 bytes for topic encoding
-  const paddedAdmin = ethers.zeroPadValue(ethers.getAddress(tokenAdmin), 32);
-
+async function scanFeeLockerDeposits(walletAddress, fromBlock, toBlock, onLog) {
+  const paddedFeeOwner = ethers.zeroPadValue(ethers.getAddress(walletAddress), 32);
   const filter = {
-    address: factoryAddress,
-    topics: [topic0, null, paddedAdmin],
+    address: CLANKER.v4.feeLocker,
+    topics: [STORE_TOKENS_TOPIC, paddedFeeOwner, null],
     fromBlock: Number(fromBlock),
     toBlock: Number(toBlock),
   };
 
+  onLog?.(`  [A] scanning FeeLocker StoreTokens (feeOwner=wallet)…`);
   const { logs, failedRanges } = await fetchLogs(filter, onLog);
 
-  if (failedRanges.length > 0) {
-    onLog?.(`  ⚠ ${failedRanges.length} block ranges failed (results may be incomplete)`);
-  }
-
-  // Decode each log via the factory interface.
-  const launches = [];
+  const tokens = new Map(); // lowercase addr → {address, firstBlock, firstTx, source}
   for (const raw of logs) {
     try {
-      const parsed = iface.parseLog({ topics: raw.topics, data: raw.data });
-      if (!parsed || parsed.name !== 'TokenCreated') continue;
-      const args = parsed.args;
-      launches.push({
-        tokenAddress: args.tokenAddress,
-        tokenAdmin: args.tokenAdmin,
-        name: args.tokenName || '',
-        symbol: args.tokenSymbol || '',
-        launchBlock: parseInt(raw.blockNumber, 16),
-        txHash: raw.transactionHash,
+      const parsed = feeLockerIface.parseLog({ topics: raw.topics, data: raw.data });
+      if (!parsed || parsed.name !== 'StoreTokens') continue;
+      const tokenAddr = parsed.args.token;
+      const key = tokenAddr.toLowerCase();
+      if (tokens.has(key)) continue;
+      tokens.set(key, {
+        address: tokenAddr,
+        firstBlock: parseInt(raw.blockNumber, 16),
+        firstTx: raw.transactionHash,
+        source: 'recipient',
       });
     } catch {
-      /* skip logs we can't decode — likely from a different event shape */
+      /* skip */
+    }
+  }
+  onLog?.(`  [A] found ${tokens.size} token${tokens.size === 1 ? '' : 's'} with fee deposits`);
+  return { tokens, failedRanges };
+}
+
+/**
+ * Path B — scan v4 factory TokenCreated events.
+ * Catches tokens the wallet launched itself.
+ */
+async function scanFactoryLaunches(walletAddress, fromBlock, toBlock, onLog) {
+  const paddedAdmin = ethers.zeroPadValue(ethers.getAddress(walletAddress), 32);
+  // v4 TokenCreated: topic[0]=eventSig, topic[1]=tokenAddress, topic[2]=tokenAdmin
+  const filter = {
+    address: CLANKER.v4.factory,
+    topics: [TOKEN_CREATED_TOPIC, null, paddedAdmin],
+    fromBlock: Number(fromBlock),
+    toBlock: Number(toBlock),
+  };
+
+  onLog?.(`  [B] scanning v4 factory TokenCreated (tokenAdmin=wallet)…`);
+  const { logs, failedRanges } = await fetchLogs(filter, onLog);
+
+  const tokens = new Map();
+  for (const raw of logs) {
+    try {
+      const parsed = v4FactoryIface.parseLog({ topics: raw.topics, data: raw.data });
+      if (!parsed || parsed.name !== 'TokenCreated') continue;
+      const tokenAddr = parsed.args.tokenAddress;
+      const key = tokenAddr.toLowerCase();
+      if (tokens.has(key)) continue;
+      tokens.set(key, {
+        address: tokenAddr,
+        firstBlock: parseInt(raw.blockNumber, 16),
+        firstTx: raw.transactionHash,
+        source: 'admin',
+        // Factory event gives us name/symbol for free — grab them for display
+        name: parsed.args.tokenName || '',
+        symbol: parsed.args.tokenSymbol || '',
+      });
+    } catch {
+      /* skip */
+    }
+  }
+  onLog?.(`  [B] found ${tokens.size} token${tokens.size === 1 ? '' : 's'} admin'd by wallet`);
+  return { tokens, failedRanges };
+}
+
+/**
+ * Discover all Clanker v4 tokens the wallet has any stake in.
+ * Runs paths A and B in parallel, merges, dedupes.
+ *
+ * @param {string} walletAddress
+ * @param {Object} [options]
+ * @param {(msg: string) => void} [options.onLog]
+ * @returns {Promise<{launches: Array, failedRanges: Array}>}
+ */
+export async function discoverLaunches(walletAddress, options = {}) {
+  const onLog = options.onLog || (() => {});
+  const provider = getProvider();
+
+  const latestBlock = BigInt(await provider.getBlockNumber());
+  const startBlock = CLANKER.v4.startBlock;
+
+  onLog(`[v4] scanning ${startBlock} → ${latestBlock}`);
+
+  // Run both scan paths in parallel — they hit different contracts so
+  // they don't compete for the same provider slots.
+  const [feeLockerResult, factoryResult] = await Promise.all([
+    scanFeeLockerDeposits(walletAddress, startBlock, latestBlock, onLog),
+    scanFactoryLaunches(walletAddress, startBlock, latestBlock, onLog),
+  ]);
+
+  // Merge both maps — preferring factory results for display fields
+  // (since they include name/symbol from the launch event).
+  const merged = new Map();
+  for (const [key, val] of feeLockerResult.tokens) {
+    merged.set(key, val);
+  }
+  for (const [key, val] of factoryResult.tokens) {
+    const existing = merged.get(key);
+    if (existing) {
+      // Merge: keep factory name/symbol, mark as both admin AND recipient
+      merged.set(key, {
+        ...existing,
+        name: val.name || existing.name,
+        symbol: val.symbol || existing.symbol,
+        source: 'admin+recipient',
+      });
+    } else {
+      merged.set(key, val);
     }
   }
 
-  return launches;
-}
+  onLog(`[v4] merged: ${merged.size} unique tokens (A=${feeLockerResult.tokens.size}, B=${factoryResult.tokens.size})`);
 
-/**
- * Discover all Clanker tokens admin'd by `walletAddress` across all configured
- * factory versions. Versions are scanned sequentially (not in parallel) to
- * respect public RPC rate limits.
- *
- * @param {string} walletAddress — checksummed address
- * @param {Object} options
- * @param {string[]} [options.versions] — which versions to scan (default: CLANKER.defaultScanVersions)
- * @param {boolean} [options.deepScan=false] — expand legacy ranges further back
- * @param {(msg: string) => void} [options.onLog] — progress logger
- * @returns {Promise<Array<{version: string, tokenAddress: string, name: string, symbol: string, launchBlock: number, txHash: string}>>}
- */
-export async function discoverLaunches(walletAddress, options = {}) {
-  const provider = getProvider();
-  const versions = options.versions || CLANKER.defaultScanVersions;
-  const deepScan = options.deepScan === true;
-  const onLog = options.onLog || (() => {});
-
-  const latestBlock = BigInt(await provider.getBlockNumber());
-  const all = [];
-
-  // Sequential across versions — avoid stacking load on public RPCs.
-  for (const version of versions) {
-    const cfg = CLANKER[version];
-    if (!cfg || !cfg.factory) continue;
-
-    const iface = version === 'v4' ? v4FactoryIface : v3FactoryIface;
-    const startBlock = deepScan && cfg.deepStartBlock ? cfg.deepStartBlock : cfg.startBlock;
-
-    onLog(`[${version}] scanning ${cfg.factory}`);
-    onLog(`  range: ${startBlock} → ${latestBlock}`);
-
-    const launches = await scanFactoryForAdmin(
-      cfg.factory,
-      iface,
-      walletAddress,
-      startBlock,
-      latestBlock,
-      onLog,
-    );
-    onLog(`[${version}] found ${launches.length} launch${launches.length === 1 ? '' : 'es'}`);
-
-    for (const l of launches) all.push({ version, ...l });
-  }
+  const launches = [...merged.values()].map((t) => ({
+    version: 'v4',
+    tokenAddress: t.address,
+    tokenAdmin: null,
+    name: t.name || '',
+    symbol: t.symbol || '',
+    launchBlock: t.firstBlock || 0,
+    txHash: t.firstTx || '',
+    discoverySource: t.source, // 'recipient' | 'admin' | 'admin+recipient'
+  }));
 
   // Sort newest-first.
-  all.sort((a, b) => b.launchBlock - a.launchBlock);
-  return all;
+  launches.sort((a, b) => b.launchBlock - a.launchBlock);
+
+  return {
+    launches,
+    failedRanges: [...feeLockerResult.failedRanges, ...factoryResult.failedRanges],
+  };
 }
 
 /**
- * Query FeeLocker for claimable balances on every discovered token,
- * plus WETH once (shared across all launches).
- *
- * Only v4 launches use the FeeLocker — v3/v3_1 have their own locker.collectRewards()
- * that pays out directly. For v3_1 tokens we include them in the result with
- * claimable=[] and a note; users can still see them listed.
+ * Query FeeLocker for current claimable balances and ERC20 metadata
+ * for every discovered token. One Multicall3 roundtrip.
  *
  * @param {string} walletAddress
- * @param {Array<{version: string, tokenAddress: string, name: string, symbol: string}>} launches
+ * @param {Array} launches
  * @returns {Promise<{items: Array, wethClaimable: bigint}>}
  */
 export async function queryClaimables(walletAddress, launches) {
   if (launches.length === 0) return { items: [], wethClaimable: 0n };
 
-  const v4Launches = launches.filter((l) => l.version === 'v4');
-  const nonV4 = launches.filter((l) => l.version !== 'v4');
-
-  // Build multicall read set:
-  //   1. WETH claimable (once)
-  //   2. Per-v4-token: availableFees(wallet, token), symbol, decimals
-  const calls = [];
-
-  // [0] WETH availableFees — shared across all v4 launches
-  calls.push({
-    target: CLANKER.v4.feeLocker,
-    iface: feeLockerIface,
-    method: 'availableFees',
-    args: [walletAddress, CLANKER.weth],
-  });
-
-  // Per-token reads: availableFees + symbol + decimals (3 calls each)
-  for (const l of v4Launches) {
+  const calls = [
+    // [0] WETH availableFees — shared across all tokens
+    {
+      target: CLANKER.v4.feeLocker,
+      iface: feeLockerIface,
+      method: 'availableFees',
+      args: [walletAddress, CLANKER.weth],
+    },
+  ];
+  for (const l of launches) {
     calls.push({
       target: CLANKER.v4.feeLocker,
       iface: feeLockerIface,
@@ -190,6 +226,12 @@ export async function queryClaimables(walletAddress, launches) {
       method: 'decimals',
       args: [],
     });
+    calls.push({
+      target: l.tokenAddress,
+      iface: erc20Iface,
+      method: 'name',
+      args: [],
+    });
   }
 
   const results = await multicallRead(calls);
@@ -198,50 +240,39 @@ export async function queryClaimables(walletAddress, launches) {
   const wethClaimable = wethRes?.success ? BigInt(wethRes.result) : 0n;
 
   const items = [];
-
-  // v4 items with claimables
-  for (let i = 0; i < v4Launches.length; i++) {
-    const l = v4Launches[i];
-    const base = 1 + i * 3;
+  for (let i = 0; i < launches.length; i++) {
+    const l = launches[i];
+    const base = 1 + i * 4;
     const availRes = results[base];
     const symRes = results[base + 1];
     const decRes = results[base + 2];
+    const nameRes = results[base + 3];
 
-    const tokenClaimable = availRes?.success ? BigInt(availRes.result) : 0n;
-    const symbol = symRes?.success ? String(symRes.result) : l.symbol || '???';
+    const claimable = availRes?.success ? BigInt(availRes.result) : 0n;
+    // Prefer the launch event's symbol/name if we have them, otherwise use
+    // the ERC20 reads. Fall back to '???' for tokens that don't expose them.
+    const symbol = (symRes?.success && symRes.result)
+      ? String(symRes.result)
+      : l.symbol || '???';
     const decimals = decRes?.success ? Number(decRes.result) : 18;
+    const name = (nameRes?.success && nameRes.result)
+      ? String(nameRes.result)
+      : l.name || symbol;
 
     items.push({
       source: 'clanker',
       id: `v4:${l.tokenAddress.toLowerCase()}`,
       version: 'v4',
-      name: l.name || symbol,
+      name,
       symbol,
       tokenAddress: l.tokenAddress,
-      claimable: tokenClaimable > 0n
-        ? [{ token: l.tokenAddress, symbol, amount: tokenClaimable, decimals }]
+      claimable: claimable > 0n
+        ? [{ token: l.tokenAddress, symbol, amount: claimable, decimals }]
         : [],
       meta: {
         launchBlock: l.launchBlock,
         txHash: l.txHash,
-      },
-    });
-  }
-
-  // Non-v4 items — listed but marked as unsupported-for-now for claims
-  for (const l of nonV4) {
-    items.push({
-      source: 'clanker',
-      id: `${l.version}:${l.tokenAddress.toLowerCase()}`,
-      version: l.version,
-      name: l.name || l.symbol || '???',
-      symbol: l.symbol || '???',
-      tokenAddress: l.tokenAddress,
-      claimable: [],
-      meta: {
-        launchBlock: l.launchBlock,
-        txHash: l.txHash,
-        note: `${l.version} uses a legacy claim flow — not yet supported in the UI`,
+        discoverySource: l.discoverySource,
       },
     });
   }

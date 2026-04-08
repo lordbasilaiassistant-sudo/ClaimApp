@@ -239,6 +239,19 @@ input[type="password"]:focus {
   color: var(--text-dim);
 }
 
+/* ===== Incomplete scan warning ===== */
+.incomplete-warn {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.incomplete-warn strong { color: var(--danger); }
+
 /* ===== WETH card ===== */
 .weth-card {
   display: flex;
