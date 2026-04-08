@@ -1,0 +1,77 @@
+name: Bug report
+description: Something is broken or produces wrong results
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill out the sections below. **Never paste a private key, seed phrase, or any secret.** Public wallet addresses are fine.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area is affected?
+      description: Helps triage the issue to the right owner.
+      options:
+        - rpc (providers, routing, rate limits)
+        - clanker (source adapter, scanner, claimer)
+        - frontend (UI, rendering, index.html)
+        - wallet (key handling, signer)
+        - security (CSP, auth, audit)
+        - docs / README
+        - ci / workflow
+        - other / unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. Include the exact symptoms.
+      placeholder: "When I scanned wallet 0x... the app showed 0 launches even though there should be 5."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to https://lordbasilaiassistant-sudo.github.io/ClaimApp/
+        2. Paste address 0x... in the address tab
+        3. Click Scan
+        4. See 0 items
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser + OS
+      placeholder: "Chrome 125 / Windows 11"
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Browser console output (optional)
+      description: Copy-paste any red errors from DevTools → Console. Redact private info.
+      render: text
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I did not include any private keys, seed phrases, or secrets in this report
+          required: true
+        - label: I have searched existing issues for duplicates
+          required: true

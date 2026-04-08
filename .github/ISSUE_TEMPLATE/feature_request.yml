@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose a new feature, source module, or improvement
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. ClaimApp is deliberately minimal — propose features that align with the zero-backend, zero-telemetry, private-key-in-browser model.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this feature touch?
+      options:
+        - new source module (Bankr, Zora, Doppler, etc.)
+        - clanker (v3/v3_1 legacy claims, better discovery)
+        - rpc (new provider, routing strategy)
+        - frontend (UI, UX, accessibility)
+        - wallet (key handling, hardware wallets)
+        - security (audits, CSP tightening)
+        - docs / onboarding
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: A clear statement of the user pain point.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would the feature work? Sketch the API or UI if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Alignment with ClaimApp design
+      description: Features that violate these are unlikely to be accepted.
+      options:
+        - label: No backend server required
+        - label: No third-party runtime scripts (bundled vendor only)
+        - label: No persistent storage of private keys or user data
+        - label: No telemetry or analytics

@@ -1,0 +1,59 @@
+name: Security finding
+description: Report a security issue (non-critical). For critical issues see below.
+title: "[security] "
+labels: ["security", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Critical vulnerabilities
+
+        If you have found a vulnerability that could compromise user keys or
+        funds, **do NOT open a public issue**. Instead, use GitHub's private
+        Security Advisory: go to the repo's Security tab → "Report a
+        vulnerability".
+
+        For non-critical findings (minor hardening suggestions, CSP tweaks,
+        dependency updates, documentation gaps), use this template.
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity (your assessment)
+      options:
+        - LOW (hardening / best practice)
+        - MEDIUM (defense in depth)
+        - HIGH — (stop, use private Security Advisory instead)
+        - CRITICAL — (stop, use private Security Advisory instead)
+    validations:
+      required: true
+
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding
+      description: Describe the issue. Include file paths and line numbers.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: What's the worst case if this is exploited?
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: Suggested fix
+      description: Concrete change recommendation.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: This finding is LOW or MEDIUM severity. HIGH/CRITICAL issues go to the private Security Advisory, not here.
+          required: true
+        - label: I have not included any secrets, keys, or private info in this report
+          required: true

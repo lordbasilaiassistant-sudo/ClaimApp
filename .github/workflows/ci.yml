@@ -1,0 +1,64 @@
+name: CI
+
+# Runs on every PR and push to main. Minimum permissions — no secrets needed.
+# Jobs:
+#   1. syntax — fail fast on any parse error in src/ or test/
+#   2. cors-check — verify no provider added to src/services/rpc/providers.js
+#      breaks browser CORS (the #1 bug we've hit so far)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Parse every JS file under src/ and test/
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r -d '' f; do
+            node --check "$f" || { echo "SYNTAX ERROR: $f" >&2; fail=1; }
+          done < <(find src test -name '*.js' -o -name '*.mjs' -print0)
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more files failed parsing"
+            exit 1
+          fi
+          echo "All JS/MJS files parse cleanly"
+
+  cors-check:
+    name: Provider CORS regression
+    runs-on: ubuntu-latest
+    # Only runs if providers.js changed, or on manual trigger.
+    # Hits public RPCs — keep concurrency low to avoid abusing them.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check if RPC providers changed
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          files: src/services/rpc/providers.js
+
+      - name: Run CORS benchmark on configured providers
+        if: steps.changed.outputs.any_changed == 'true'
+        run: node test/bench-cors.mjs

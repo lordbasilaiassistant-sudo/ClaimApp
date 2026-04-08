@@ -1,0 +1,11 @@
+# CODEOWNERS — final review on every path routes to the repo owner.
+#
+# Internally, different areas of the codebase are maintained by specialized
+# AI team members. That ownership map lives in CONTRIBUTING.md for
+# documentation — this file is just GitHub's mechanism for requesting
+# reviews, and all reviews ultimately come back to the repo owner.
+#
+# Contributors: don't edit this file. Edit CONTRIBUTING.md if you want to
+# propose a change to the area ownership map.
+
+* @lordbasilaiassistant-sudo

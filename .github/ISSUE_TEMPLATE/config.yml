@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Critical security vulnerability
+    url: https://github.com/lordbasilaiassistant-sudo/ClaimApp/security/advisories/new
+    about: Report a vulnerability privately. DO NOT open a public issue for critical findings.
+  - name: Launch tokens on Base
+    url: https://thryx.fun
+    about: Made by THRYX — free gasless token launchpad.
