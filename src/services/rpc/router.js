@@ -172,12 +172,50 @@ export class RpcRouter {
 
 // Module-singleton router (lazy-init)
 let _router = null;
+// Session-only custom providers (set via addCustomProvider, cleared on reset/reload)
+const _customProviders = [];
 
 export function getRouter() {
-  if (!_router) _router = new RpcRouter();
+  if (!_router) {
+    _router = new RpcRouter([..._customProviders, ...BASE_PROVIDERS]);
+  }
   return _router;
 }
 
 export function resetRouter() {
   _router = null;
+}
+
+/**
+ * Add a custom RPC provider at runtime. Session-only — never persisted.
+ * Prepends to the provider list with high weight so it's picked first.
+ * Recreates the router so the new provider takes effect immediately.
+ *
+ * @param {{name: string, url: string, maxConcurrent?: number, maxLogBlockRange?: number}} provider
+ */
+export function addCustomProvider(provider) {
+  const normalized = {
+    name: provider.name || 'custom',
+    url: provider.url,
+    weight: 100, // beats all defaults
+    maxConcurrent: provider.maxConcurrent || 5,
+    maxLogBlockRange: provider.maxLogBlockRange || 9_999,
+  };
+  // Replace if same name already exists
+  const idx = _customProviders.findIndex((p) => p.name === normalized.name);
+  if (idx >= 0) _customProviders[idx] = normalized;
+  else _customProviders.unshift(normalized);
+  resetRouter();
+}
+
+export function listCustomProviders() {
+  return [..._customProviders];
+}
+
+export function removeCustomProvider(name) {
+  const idx = _customProviders.findIndex((p) => p.name === name);
+  if (idx >= 0) {
+    _customProviders.splice(idx, 1);
+    resetRouter();
+  }
 }

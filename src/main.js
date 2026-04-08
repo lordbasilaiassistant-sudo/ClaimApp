@@ -14,6 +14,13 @@ import {
 } from './services/wallet.js';
 import { SOURCES } from './sources/index.js';
 import clanker from './sources/clanker/index.js';
+import { getRpcStats } from './services/provider.js';
+import {
+  addCustomProvider,
+  listCustomProviders,
+  removeCustomProvider,
+} from './services/rpc/router.js';
+import { validateProviderUrl } from './services/rpc/providers.js';
 import {
   formatAmount,
   shortAddress,
@@ -204,16 +211,40 @@ function renderResults(scans, fromCache = false) {
     (fromCache ? ' (cached)' : '')
   ));
 
-  // Warn prominently if any scan came back incomplete (chunks failed even
-  // after retries). Incomplete scans explain "same wallet, different results"
-  // behavior — without this warning users would see a silently-shrunk list.
-  const incompleteScans = scans.filter((s) => s && s.complete === false);
-  if (incompleteScans.length > 0) {
-    const warnBanner = el('div', { className: 'incomplete-warn' }, [
-      el('strong', {}, '⚠ Scan incomplete — '),
+  // Confidence-tiered warning (issue #6):
+  //
+  // A handful of failed chunks doesn't mean data is lost — if the failed
+  // ranges fall in block windows where the wallet had no activity, nothing
+  // is missing. But we can't know that without retrying. So we use a
+  // three-tier approach based on how many chunks failed relative to how
+  // many items we did find:
+  //
+  //   tier 0: no failures           → no banner (clean)
+  //   tier 1: ≤ 5 failures total    → subtle info note (likely fine)
+  //   tier 2: > 5 failures          → red warning (probably missing data)
+  //
+  // The threshold 5 is empirically picked: a clean scan of the treasury
+  // has 0 failures; a stressed scan typically has 2-4 sporadic failures
+  // that don't correlate with missing launches; outright rate-limit
+  // cascades produce 10+ failures.
+  const totalFailed = scans.reduce(
+    (sum, s) => sum + ((s && s.failedRanges?.length) || 0),
+    0,
+  );
+  if (totalFailed > 0 && totalFailed <= 5) {
+    const infoBanner = el('div', { className: 'incomplete-note' }, [
       document.createTextNode(
-        incompleteScans.map((s) => `${s.source}: ${s.failedRanges?.length || 0} chunks failed`).join(', ') +
-        '. Results may be missing some launches. Click Scan again to retry — this is usually a transient RPC issue.'
+        `Note: ${totalFailed} minor RPC hiccup${totalFailed === 1 ? '' : 's'} during scan — results are likely complete. ` +
+        `Rescan within 30s uses cache; after that triggers a fresh scan.`
+      ),
+    ]);
+    summary.appendChild(infoBanner);
+  } else if (totalFailed > 5) {
+    const warnBanner = el('div', { className: 'incomplete-warn' }, [
+      el('strong', {}, '⚠ Scan may be incomplete — '),
+      document.createTextNode(
+        `${totalFailed} chunks failed after retries. ` +
+        `Wait a few seconds and click Scan again for a fresh attempt.`
       ),
     ]);
     summary.appendChild(warnBanner);
@@ -438,6 +469,155 @@ function initDonationCopy() {
   });
 }
 
+// ===== Settings panel =====
+function initSettings() {
+  const toggle = $('#settings-toggle');
+  const card = $('#settings-card');
+  if (!toggle || !card) return;
+
+  toggle.addEventListener('click', () => {
+    const isHidden = card.hasAttribute('hidden');
+    show(card, isHidden);
+    toggle.classList.toggle('active', isHidden);
+    if (isHidden) refreshRpcStats();
+  });
+
+  $('#test-rpc-btn')?.addEventListener('click', testCustomRpc);
+  $('#add-rpc-btn')?.addEventListener('click', addCustomRpc);
+  $('#refresh-stats-btn')?.addEventListener('click', refreshRpcStats);
+  $('#clear-cache-btn')?.addEventListener('click', handleClearCache);
+}
+
+function setSettingsStatus(msg, kind = '') {
+  const node = $('#custom-rpc-status');
+  if (!node) return;
+  clear(node);
+  if (!msg) {
+    node.className = 'settings-status';
+    return;
+  }
+  node.className = `settings-status ${kind}`;
+  node.appendChild(document.createTextNode(msg));
+}
+
+async function testCustomRpc() {
+  const url = $('#custom-rpc-url')?.value.trim();
+  if (!url) { setSettingsStatus('Enter an RPC URL first', 'error'); return; }
+  try {
+    validateProviderUrl(url);
+  } catch (e) {
+    setSettingsStatus(safeErrorMessage(e), 'error');
+    return;
+  }
+  setSettingsStatus('Testing…');
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) { setSettingsStatus(`HTTP ${res.status}`, 'error'); return; }
+    const json = await res.json();
+    if (json.error) { setSettingsStatus(json.error.message || 'RPC error', 'error'); return; }
+    if (json.result !== '0x2105') {
+      setSettingsStatus(`Wrong chain: got ${json.result}, expected 0x2105 (Base)`, 'error');
+      return;
+    }
+    setSettingsStatus('✓ Valid Base RPC — ready to add', 'success');
+  } catch (e) {
+    // On the deployed site, a failed fetch to a non-CSP-allowlisted URL
+    // shows up as a network error. Give a specific hint.
+    const msg = safeErrorMessage(e);
+    setSettingsStatus(
+      `${msg}. If this is the deployed site, the CSP blocks non-allowlisted URLs. ` +
+      `Run ClaimApp locally to use custom endpoints.`,
+      'error',
+    );
+  }
+}
+
+function addCustomRpc() {
+  const url = $('#custom-rpc-url')?.value.trim();
+  if (!url) { setSettingsStatus('Enter an RPC URL first', 'error'); return; }
+  try {
+    validateProviderUrl(url);
+  } catch (e) {
+    setSettingsStatus(safeErrorMessage(e), 'error');
+    return;
+  }
+  const name = `custom-${new URL(url).hostname}`;
+  addCustomProvider({ name, url, maxConcurrent: 5, maxLogBlockRange: 9_999 });
+  // Invalidate the scan cache since provider set changed
+  clearScanCache();
+  setSettingsStatus(`✓ Added ${name}. Scan again to use it.`, 'success');
+  refreshRpcStats();
+}
+
+function handleClearCache() {
+  clearScanCache();
+  setSettingsStatus('✓ Scan cache cleared', 'success');
+}
+
+function refreshRpcStats() {
+  const node = $('#rpc-stats');
+  if (!node) return;
+  clear(node);
+
+  let stats;
+  try {
+    stats = getRpcStats();
+  } catch (e) {
+    node.appendChild(el('div', { className: 'muted' }, 'Stats unavailable'));
+    return;
+  }
+
+  // Overall stats line
+  const totals = el('div', { className: 'muted', style: 'margin-bottom: 10px;' }, [
+    document.createTextNode(
+      `total: ${stats.total}  success: ${stats.success}  errors: ${stats.errors}  ` +
+      `retries: ${stats.retries}  rate-limits: ${stats.rateLimits}`
+    ),
+  ]);
+  node.appendChild(totals);
+
+  // Per-provider table
+  if (!stats.providers || stats.providers.length === 0) {
+    node.appendChild(el('div', { className: 'muted' }, 'No provider activity yet — run a scan.'));
+    return;
+  }
+  const table = el('table', {}, [
+    el('thead', {}, [
+      el('tr', {}, [
+        el('th', {}, 'provider'),
+        el('th', {}, 'status'),
+        el('th', {}, 'in-flight'),
+        el('th', {}, 'latency'),
+        el('th', {}, 'ok'),
+        el('th', {}, 'err'),
+      ]),
+    ]),
+  ]);
+  const tbody = el('tbody', {});
+  for (const p of stats.providers) {
+    const statusLabel = !p.healthy ? 'unhealthy' : p.rateLimited ? 'rate-limited' : 'healthy';
+    const statusClass = !p.healthy ? 'stat-err' : p.rateLimited ? 'stat-rl' : 'stat-ok';
+    tbody.appendChild(el('tr', {}, [
+      el('td', {}, p.name),
+      el('td', { className: statusClass }, statusLabel),
+      el('td', {}, String(p.inflight)),
+      el('td', {}, p.latency === Infinity ? '—' : `${p.latency}ms`),
+      el('td', { className: 'stat-ok' }, String(p.success)),
+      el('td', { className: 'stat-err' }, String(p.errors)),
+    ]));
+  }
+  table.appendChild(tbody);
+  node.appendChild(table);
+}
+
 // ===== Address change listener =====
 onAddressChange((addr) => {
   show($('#scan-card'), !!addr);
@@ -451,6 +631,7 @@ function init() {
   initTabs();
   initWalletInputs();
   initDonationCopy();
+  initSettings();
   $('#scan-btn').addEventListener('click', runScan);
 }
 

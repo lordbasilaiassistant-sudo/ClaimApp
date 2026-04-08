@@ -33,6 +33,7 @@
       <span class="tag">universal claim finder</span>
     </div>
     <nav class="app-nav">
+      <button class="nav-btn" id="settings-toggle" aria-label="Open settings" title="RPC settings & router stats">⚙</button>
       <a href="https://github.com/lordbasilaiassistant-sudo/ClaimApp" id="repo-link" target="_blank" rel="noopener noreferrer">GitHub</a>
     </nav>
   </header>
@@ -61,6 +62,37 @@
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3 L9 3 L9 9 M9 3 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
       </div>
     </a>
+
+    <!-- SETTINGS PANEL (hidden by default, toggled by the gear icon in the header) -->
+    <section class="card settings-card" id="settings-card" hidden>
+      <header class="card-header">
+        <h2>RPC settings</h2>
+        <p class="muted">Add a custom RPC endpoint and view router stats. Custom endpoints are session-only and never persisted.</p>
+      </header>
+
+      <div class="settings-section">
+        <h3>Add custom RPC</h3>
+        <div class="row">
+          <input type="text" id="custom-rpc-url" placeholder="https://your-rpc.example.com/base" spellcheck="false" autocomplete="off" />
+          <button class="btn" id="test-rpc-btn">Test</button>
+          <button class="btn primary" id="add-rpc-btn">Add</button>
+        </div>
+        <div class="settings-status" id="custom-rpc-status" aria-live="polite"></div>
+        <p class="muted small">
+          <strong>Note for deployed site users:</strong> the strict Content-Security-Policy
+          only allows requests to the default providers. A custom URL will be
+          blocked by your browser unless you <a href="https://github.com/lordbasilaiassistant-sudo/ClaimApp#running-locally" target="_blank" rel="noopener noreferrer">run ClaimApp locally</a>
+          or fork the repo with your URL in <code>index.html</code>'s CSP meta tag.
+        </p>
+      </div>
+
+      <div class="settings-section">
+        <h3>Router stats</h3>
+        <button class="btn small" id="refresh-stats-btn">Refresh</button>
+        <button class="btn small" id="clear-cache-btn">Clear scan cache</button>
+        <div class="rpc-stats" id="rpc-stats"></div>
+      </div>
+    </section>
 
     <!-- SECURITY BANNER — always visible -->
     <section class="banner security-banner" role="note" aria-label="Security notice">
