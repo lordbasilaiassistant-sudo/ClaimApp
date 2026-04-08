@@ -1,88 +1,196 @@
 // src/services/rpc/log-fetcher.js
-// Fast-path eth_getLogs fetcher that uses only large-range providers.
+// Browser-reliable eth_getLogs fetcher with adaptive chunk sizing.
 //
-// Why this exists:
-//   Discovery scans (finding all TokenCreated events for a wallet) need to
-//   query multi-million block ranges. Most public RPCs cap eth_getLogs at
-//   10k blocks, forcing us to chunk into 1,000+ requests. But TWO providers
-//   (merkle, tenderly) handle 200k-500k blocks per call — two orders of
-//   magnitude fewer requests.
+// Strategy:
+//   Pass 1 — LARGE chunks (200k blocks) routed to LARGE_RANGE_LOG_PROVIDERS.
+//     Currently that's tenderly-public only. Fast path: 65 chunks for a
+//     full v4 range, ~500-1000ms each. Total ~3-5 seconds.
 //
-//   This module bypasses the generic multi-RPC router and routes eth_getLogs
-//   directly to large-range providers, using their max block windows.
-//   Result: scans that took 80+ seconds now complete in 5-10 seconds.
+//   Pass 2 — For any chunks that failed in pass 1, split each into 20 ×
+//     10k sub-chunks and route through SMALL_RANGE_LOG_PROVIDERS
+//     (base-developer, base-official, sequence, 1rpc). Slower but covers
+//     the gaps when tenderly has a hiccup.
 //
-// Contract:
-//   * `fetchLogs(filter)` returns raw eth_getLogs response objects (not decoded).
-//   * Caller is responsible for decoding with ethers.Interface.parseLog().
-//   * Concurrency is bounded per provider to avoid overloading them.
-//   * Failed chunks retry on a different large-range provider.
+//   Pass 3 — Any 10k chunks STILL failing after pass 2 get one more retry
+//     after a cooldown, just in case of transient 429s.
+//
+// All browser CORS verified via test/bench-cors.mjs. Providers that work
+// in node but fail CORS preflight (like merkle) MUST NOT be included.
+//
+// Deduplication: results are deduped by (transactionHash, logIndex) so
+// overlapping retry responses don't double-count.
 
-import { LARGE_RANGE_LOG_PROVIDERS } from './providers.js';
+import {
+  LARGE_RANGE_LOG_PROVIDERS,
+  SMALL_RANGE_LOG_PROVIDERS,
+} from './providers.js';
 
-const REQUEST_TIMEOUT_MS = 20_000; // Large ranges can take longer — give them time
-const MAX_RETRIES = 5; // per chunk, within a single pass
-const SECOND_PASS_DELAY_MS = 1500; // wait before retrying failed chunks
+// Shorter timeouts = faster recovery from stuck chunks. 10k-block queries
+// resolve in <1s when the provider is healthy, so 5s is plenty. Large-range
+// queries (200k) resolve in <2s normally.
+const REQUEST_TIMEOUT_MS = 6_000;
+const MAX_RETRIES_PER_CHUNK = 2;
+const SECOND_PASS_DELAY_MS = 800;
+const THIRD_PASS_DELAY_MS = 1_500;
+
+// Concurrency scales with provider slot budget.
+function totalSlots(providers) {
+  return providers.reduce((s, p) => s + (p.maxConcurrent || 1), 0);
+}
 
 /**
- * Round-robin counter for provider selection.
- */
-let _rrIndex = 0;
-
-/**
- * Fetch all logs for `filter` across a block range, chunking based on each
- * provider's max supported range. Routes through LARGE_RANGE_LOG_PROVIDERS.
+ * Fetch all logs matching `filter` over a block range, with adaptive
+ * chunking and multi-pass recovery.
  *
- * Correctness contract:
- *   * First pass runs all chunks with per-chunk retry across providers.
- *   * Any failed chunks get a SECOND pass with a fresh retry budget and a
- *     cooldown — this catches transient network blips and 429s that resolve
- *     after the rate-limit window expires.
- *   * If any chunks still fail after the second pass, the return value
- *     includes them in `failedRanges`. Callers MUST treat a non-empty
- *     `failedRanges` as "results are incomplete" and warn the user.
- *   * Deduplication by (txHash, logIndex) — merkle and tenderly can both
- *     serve the same chunks on retries, so we might see duplicate logs.
- *
- * @param {{address: string, topics: (string | null | string[])[], fromBlock: number, toBlock: number}} filter
+ * @param {{address: string, topics: any[], fromBlock: number, toBlock: number}} filter
  * @param {(msg: string) => void} [onLog]
  * @returns {Promise<{logs: any[], failedRanges: Array<{from: number, to: number}>}>}
  */
 export async function fetchLogs(filter, onLog) {
-  // Pick the smallest maxLogBlockRange across available providers — that's
-  // our chunk size. Using the MINIMUM means all providers can handle every
-  // chunk, so we can fail over freely.
-  const chunkSize = Math.min(...LARGE_RANGE_LOG_PROVIDERS.map((p) => p.maxLogBlockRange));
-
-  // Build chunks
-  const chunks = [];
-  for (let start = filter.fromBlock; start <= filter.toBlock; start += chunkSize) {
-    const end = Math.min(start + chunkSize - 1, filter.toBlock);
-    chunks.push({ from: start, to: end });
+  if (LARGE_RANGE_LOG_PROVIDERS.length === 0 && SMALL_RANGE_LOG_PROVIDERS.length === 0) {
+    throw new Error('No eth_getLogs providers configured');
   }
-  onLog?.(`  fast-path: ${chunks.length} chunks × ${chunkSize} blocks (${LARGE_RANGE_LOG_PROVIDERS.length} providers)`);
 
   const allLogs = [];
-  const failedRanges = [];
-  let processed = 0;
+  let failedRanges = [];
 
-  // Per-provider concurrency slots — each provider gets its own semaphore.
+  // ===== Pass 1: LARGE chunks through large-range providers =====
+  if (LARGE_RANGE_LOG_PROVIDERS.length > 0) {
+    const chunkSize = Math.min(...LARGE_RANGE_LOG_PROVIDERS.map((p) => p.maxLogBlockRange));
+    const chunks = buildChunks(filter.fromBlock, filter.toBlock, chunkSize);
+    onLog?.(`    pass 1: ${chunks.length} chunks × ${chunkSize} blocks (${LARGE_RANGE_LOG_PROVIDERS.length} provider)`);
+
+    const { logs, failed } = await runChunks(
+      chunks,
+      filter,
+      LARGE_RANGE_LOG_PROVIDERS,
+      totalSlots(LARGE_RANGE_LOG_PROVIDERS),
+      onLog,
+      '    pass 1',
+    );
+    allLogs.push(...logs);
+    failedRanges = failed;
+
+    // Pass 1.5: retry failed LARGE chunks via the same provider at lower
+    // concurrency. Sub-dividing into 10k pieces is expensive — if tenderly
+    // just hit a brief rate limit, a quick retry at low load often recovers
+    // the whole 200k chunk in one call.
+    if (failedRanges.length > 0 && failedRanges.length <= 10) {
+      onLog?.(`    pass 1 failed ${failedRanges.length}, quick-retry at low load…`);
+      await sleep(500);
+      const retryResult = await runChunks(
+        failedRanges,
+        filter,
+        LARGE_RANGE_LOG_PROVIDERS,
+        Math.max(2, Math.floor(totalSlots(LARGE_RANGE_LOG_PROVIDERS) / 2)),
+        onLog,
+        '    pass 1.5',
+      );
+      allLogs.push(...retryResult.logs);
+      failedRanges = retryResult.failed;
+    }
+  } else {
+    failedRanges = [{ from: filter.fromBlock, to: filter.toBlock }];
+  }
+
+  // ===== Pass 2: split failed ranges into 10k chunks and route via small-range providers =====
+  if (failedRanges.length > 0 && SMALL_RANGE_LOG_PROVIDERS.length > 0) {
+    onLog?.(`    pass 1 failed ${failedRanges.length} ranges, waiting ${SECOND_PASS_DELAY_MS}ms…`);
+    await sleep(SECOND_PASS_DELAY_MS);
+
+    const smallChunkSize = Math.min(...SMALL_RANGE_LOG_PROVIDERS.map((p) => p.maxLogBlockRange));
+    const subChunks = [];
+    for (const range of failedRanges) {
+      subChunks.push(...buildChunks(range.from, range.to, smallChunkSize));
+    }
+    onLog?.(`    pass 2: ${subChunks.length} sub-chunks × ${smallChunkSize} blocks (${SMALL_RANGE_LOG_PROVIDERS.length} providers)`);
+
+    const { logs, failed } = await runChunks(
+      subChunks,
+      filter,
+      SMALL_RANGE_LOG_PROVIDERS,
+      totalSlots(SMALL_RANGE_LOG_PROVIDERS),
+      onLog,
+      '    pass 2',
+    );
+    allLogs.push(...logs);
+    failedRanges = failed;
+  }
+
+  // ===== Pass 3: retry any remaining failures one more time =====
+  if (failedRanges.length > 0 && SMALL_RANGE_LOG_PROVIDERS.length > 0) {
+    onLog?.(`    pass 2 failed ${failedRanges.length} chunks, waiting ${THIRD_PASS_DELAY_MS}ms for pass 3…`);
+    await sleep(THIRD_PASS_DELAY_MS);
+
+    const { logs, failed } = await runChunks(
+      failedRanges,
+      filter,
+      SMALL_RANGE_LOG_PROVIDERS,
+      Math.min(totalSlots(SMALL_RANGE_LOG_PROVIDERS), 10), // lower concurrency on pass 3
+      onLog,
+      '    pass 3',
+    );
+    allLogs.push(...logs);
+    failedRanges = failed;
+
+    if (failedRanges.length > 0) {
+      onLog?.(`    ⚠ pass 3 still missing ${failedRanges.length} chunks — results incomplete`);
+    } else {
+      onLog?.(`    ✓ pass 3 recovered all remaining chunks`);
+    }
+  }
+
+  // ===== Dedupe logs by (txHash, logIndex) =====
+  const seen = new Set();
+  const deduped = [];
+  for (const log of allLogs) {
+    const key = `${log.transactionHash}:${log.logIndex}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(log);
+  }
+  if (deduped.length !== allLogs.length) {
+    onLog?.(`    deduped ${allLogs.length - deduped.length} duplicate log entries`);
+  }
+
+  return { logs: deduped, failedRanges };
+}
+
+// ===== Helpers =====
+
+function buildChunks(fromBlock, toBlock, chunkSize) {
+  const chunks = [];
+  for (let start = fromBlock; start <= toBlock; start += chunkSize) {
+    const end = Math.min(start + chunkSize - 1, toBlock);
+    chunks.push({ from: start, to: end });
+  }
+  return chunks;
+}
+
+/**
+ * Run an array of chunks against the given provider set with bounded
+ * concurrency. Returns collected logs + any still-failed ranges.
+ */
+async function runChunks(chunks, baseFilter, providers, concurrency, onLog, progressLabel) {
+  const logs = [];
+  const failed = [];
+  let processed = 0;
+  const totalChunks = chunks.length;
+
+  // Per-provider in-flight counters
   const slots = new Map();
-  for (const p of LARGE_RANGE_LOG_PROVIDERS) {
+  for (const p of providers) {
     slots.set(p.name, { max: p.maxConcurrent, inflight: 0 });
   }
 
-  // Total concurrency = sum of slots
-  const totalSlots = [...slots.values()].reduce((sum, s) => sum + s.max, 0);
+  // Round-robin cursor (fresh per runChunks call so consecutive passes
+  // don't inherit stale state)
+  let rrCursor = 0;
 
-  let queueIdx = 0;
-
-  async function pickProvider(excludeNames = new Set()) {
-    // Simple round-robin across providers with free slots and not in the
-    // exclude set. Tries every provider in a cycle.
-    for (let i = 0; i < LARGE_RANGE_LOG_PROVIDERS.length; i++) {
-      _rrIndex = (_rrIndex + 1) % LARGE_RANGE_LOG_PROVIDERS.length;
-      const p = LARGE_RANGE_LOG_PROVIDERS[_rrIndex];
+  function pickProvider(excludeNames) {
+    for (let i = 0; i < providers.length; i++) {
+      rrCursor = (rrCursor + 1) % providers.length;
+      const p = providers[rrCursor];
       if (excludeNames.has(p.name)) continue;
       const s = slots.get(p.name);
       if (s.inflight < s.max) {
@@ -98,12 +206,11 @@ export async function fetchLogs(filter, onLog) {
     if (s) s.inflight = Math.max(0, s.inflight - 1);
   }
 
-  async function fetchChunkOnce(chunk, excludeNames) {
-    // Pick a provider with free slots. If none, wait a beat and retry.
-    let provider = await pickProvider(excludeNames);
+  async function fetchOnce(chunk, excludeNames) {
+    let provider = pickProvider(excludeNames);
     while (!provider) {
       await sleep(20);
-      provider = await pickProvider(excludeNames);
+      provider = pickProvider(excludeNames);
     }
 
     const body = {
@@ -111,8 +218,8 @@ export async function fetchLogs(filter, onLog) {
       id: Math.floor(Math.random() * 1e9),
       method: 'eth_getLogs',
       params: [{
-        address: filter.address,
-        topics: filter.topics,
+        address: baseFilter.address,
+        topics: baseFilter.topics,
         fromBlock: '0x' + chunk.from.toString(16),
         toBlock: '0x' + chunk.to.toString(16),
       }],
@@ -146,99 +253,43 @@ export async function fetchLogs(filter, onLog) {
     }
   }
 
-  async function fetchChunkWithRetry(chunk) {
+  async function fetchWithRetry(chunk) {
     const excludeNames = new Set();
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      const r = await fetchChunkOnce(chunk, excludeNames);
+    for (let attempt = 0; attempt < MAX_RETRIES_PER_CHUNK; attempt++) {
+      const r = await fetchOnce(chunk, excludeNames);
       if (r.ok) return r.logs;
       excludeNames.add(r.provider);
-      // If we've excluded every provider, reset and wait briefly.
-      if (excludeNames.size >= LARGE_RANGE_LOG_PROVIDERS.length) {
+      if (excludeNames.size >= providers.length) {
         excludeNames.clear();
-        await sleep(500);
+        await sleep(250);
       }
     }
-    return null; // All attempts failed
+    return null;
   }
 
-  // Worker pool. Concurrency cap = totalSlots (each provider gets its own
-  // slot quota, so we can freely spawn up to totalSlots workers).
-  const CONCURRENCY = Math.min(totalSlots, chunks.length);
-
+  let queueIdx = 0;
   async function worker() {
     while (true) {
       const i = queueIdx++;
       if (i >= chunks.length) return;
       const chunk = chunks[i];
-      const logs = await fetchChunkWithRetry(chunk);
-      if (logs === null) {
-        failedRanges.push(chunk);
+      const result = await fetchWithRetry(chunk);
+      if (result === null) {
+        failed.push(chunk);
       } else {
-        allLogs.push(...logs);
+        logs.push(...result);
       }
       processed++;
-      if (processed % 5 === 0 || processed === chunks.length) {
-        onLog?.(`    fast-path ${processed}/${chunks.length}`);
+      if (processed % 10 === 0 || processed === totalChunks) {
+        onLog?.(`${progressLabel} ${processed}/${totalChunks}`);
       }
     }
   }
 
-  const workers = Array.from({ length: CONCURRENCY }, () => worker());
-  await Promise.all(workers);
+  const workerCount = Math.min(concurrency, totalChunks);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-  // ===== Second pass: retry any failed ranges =====
-  if (failedRanges.length > 0) {
-    onLog?.(`    ⚠ first pass: ${failedRanges.length} chunks failed, retrying in ${SECOND_PASS_DELAY_MS}ms…`);
-    await sleep(SECOND_PASS_DELAY_MS);
-
-    const secondPassQueue = [...failedRanges];
-    failedRanges.length = 0;
-    let secondPassIdx = 0;
-
-    async function secondPassWorker() {
-      while (true) {
-        const i = secondPassIdx++;
-        if (i >= secondPassQueue.length) return;
-        const chunk = secondPassQueue[i];
-        const logs = await fetchChunkWithRetry(chunk);
-        if (logs === null) {
-          failedRanges.push(chunk);
-        } else {
-          allLogs.push(...logs);
-        }
-      }
-    }
-
-    const secondPassWorkers = Array.from(
-      { length: Math.min(CONCURRENCY, secondPassQueue.length) },
-      () => secondPassWorker(),
-    );
-    await Promise.all(secondPassWorkers);
-
-    if (failedRanges.length > 0) {
-      onLog?.(`    ⚠ second pass: ${failedRanges.length} chunks STILL failed — results incomplete`);
-    } else {
-      onLog?.(`    ✓ second pass recovered all failed chunks`);
-    }
-  }
-
-  // ===== Deduplicate logs by (transactionHash, logIndex) =====
-  // If merkle and tenderly both served overlapping requests (possible on
-  // retry paths), we'd have duplicate log entries. Dedupe so the caller
-  // always sees each on-chain event exactly once.
-  const seen = new Set();
-  const dedupedLogs = [];
-  for (const log of allLogs) {
-    const key = `${log.transactionHash}:${log.logIndex}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    dedupedLogs.push(log);
-  }
-  if (dedupedLogs.length !== allLogs.length) {
-    onLog?.(`    deduped ${allLogs.length - dedupedLogs.length} duplicate log entries`);
-  }
-
-  return { logs: dedupedLogs, failedRanges };
+  return { logs, failed };
 }
 
 function sleep(ms) {

@@ -137,12 +137,13 @@ export async function discoverLaunches(walletAddress, options = {}) {
 
   onLog(`[v4] scanning ${startBlock} → ${latestBlock}`);
 
-  // Run both scan paths in parallel — they hit different contracts so
-  // they don't compete for the same provider slots.
-  const [feeLockerResult, factoryResult] = await Promise.all([
-    scanFeeLockerDeposits(walletAddress, startBlock, latestBlock, onLog),
-    scanFactoryLaunches(walletAddress, startBlock, latestBlock, onLog),
-  ]);
+  // Run paths sequentially, not in parallel — we only have ONE browser-safe
+  // large-range provider (tenderly), and doubling the in-flight load against
+  // it triggers aggressive rate limiting (31/65 chunks failed in testing
+  // when A and B ran via Promise.all). Serial halves peak load at the cost
+  // of ~2x wall-clock time, which is still well under 5 seconds total.
+  const feeLockerResult = await scanFeeLockerDeposits(walletAddress, startBlock, latestBlock, onLog);
+  const factoryResult = await scanFactoryLaunches(walletAddress, startBlock, latestBlock, onLog);
 
   // Merge both maps — preferring factory results for display fields
   // (since they include name/symbol from the launch event).
