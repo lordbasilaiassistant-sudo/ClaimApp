@@ -174,18 +174,24 @@ async function scanFactoryLaunches(walletAddress, fromBlock, toBlock, onLog) {
 }
 
 /**
- * Discover all Clanker tokens (v4 + legacy) the wallet has any stake in.
+ * Discover all Clanker tokens the wallet has any stake in.
  * Runs each scan path sequentially to respect tenderly rate limits.
+ *
+ * Legacy v3/v3_1 scanning is OFF by default because it adds ~230 extra
+ * chunks per scan (v3 factory has been around since block 14M). Most
+ * users only have v4 launches — the legacy scan is dead weight for them.
+ * Opt in via `options.includeLegacy = true` or wire a "Deep scan" toggle
+ * in the UI.
  *
  * @param {string} walletAddress
  * @param {Object} [options]
- * @param {boolean} [options.includeLegacy=true] — scan v3_1/v3/v2 factories too
+ * @param {boolean} [options.includeLegacy=false] — scan v3_1/v3 factories too
  * @param {(msg: string) => void} [options.onLog]
  * @returns {Promise<{launches: Array, failedRanges: Array}>}
  */
 export async function discoverLaunches(walletAddress, options = {}) {
   const onLog = options.onLog || (() => {});
-  const includeLegacy = options.includeLegacy !== false;
+  const includeLegacy = options.includeLegacy === true;
   const provider = getProvider();
 
   const latestBlock = BigInt(await provider.getBlockNumber());
