@@ -17,7 +17,7 @@
 import { ethers } from '../../vendor/ethers.js';
 import { getProvider } from '../../services/provider.js';
 import { multicallRead } from '../../services/multicall.js';
-import { runPool, runWithRetry } from '../../services/rpc-throttle.js';
+import { fetchLogs } from '../../services/rpc/log-fetcher.js';
 import { CLANKER } from './config.js';
 import {
   FEE_LOCKER_ABI,
@@ -28,77 +28,62 @@ import {
 
 const feeLockerIface = new ethers.Interface(FEE_LOCKER_ABI);
 const erc20Iface = new ethers.Interface(ERC20_ABI);
+const v4FactoryIface = new ethers.Interface(CLANKER_V4_FACTORY_ABI);
+const v3FactoryIface = new ethers.Interface(CLANKER_V3_FACTORY_ABI);
 
 /**
- * Scan factory events in chunks to find all TokenCreated events where
- * tokenAdmin matches the target address. Chunks run through runPool with
- * bounded concurrency and per-chunk retry.
+ * Scan factory events for all TokenCreated events where tokenAdmin matches
+ * the target address. Uses the fast log-fetcher which routes through
+ * large-range providers (merkle, tenderly) with 200k-block chunks.
  *
- * @param {ethers.Contract} factory — Contract instance with the factory ABI
- * @param {string} tokenAdmin — checksummed wallet address to filter by
+ * @param {string} factoryAddress
+ * @param {ethers.Interface} iface
+ * @param {string} tokenAdmin — checksummed wallet
  * @param {bigint} fromBlock
  * @param {bigint} toBlock
- * @param {(msg: string) => void} [onLog] — progress logger
- * @returns {Promise<Array<{tokenAddress: string, tokenAdmin: string, name: string, symbol: string, launchBlock: number, txHash: string}>>}
+ * @param {(msg: string) => void} [onLog]
+ * @returns {Promise<Array>}
  */
-async function scanFactoryForAdmin(factory, tokenAdmin, fromBlock, toBlock, onLog) {
-  const chunkSize = CLANKER.logScanChunkSize;
+async function scanFactoryForAdmin(factoryAddress, iface, tokenAdmin, fromBlock, toBlock, onLog) {
+  // Build the raw eth_getLogs filter. topic[0] = event signature hash,
+  // topic[2] = tokenAdmin (indexed). topic[1] is tokenAddress (indexed)
+  // which we leave as null to match any token.
+  const eventFragment = iface.getEvent('TokenCreated');
+  const topic0 = eventFragment.topicHash;
+  // Pad the address to 32 bytes for topic encoding
+  const paddedAdmin = ethers.zeroPadValue(ethers.getAddress(tokenAdmin), 32);
 
-  // Build the filter: TokenCreated event with tokenAdmin as the 3rd indexed param.
-  // ethers v6 resolves topic[2] automatically from the named param.
-  const filter = factory.filters.TokenCreated(null, null, tokenAdmin);
+  const filter = {
+    address: factoryAddress,
+    topics: [topic0, null, paddedAdmin],
+    fromBlock: Number(fromBlock),
+    toBlock: Number(toBlock),
+  };
 
-  // Build chunk task list.
-  const chunks = [];
-  for (let start = fromBlock; start <= toBlock; start += chunkSize) {
-    const end = start + chunkSize - 1n > toBlock ? toBlock : start + chunkSize - 1n;
-    chunks.push({ start: Number(start), end: Number(end) });
+  const { logs, failedRanges } = await fetchLogs(filter, onLog);
+
+  if (failedRanges.length > 0) {
+    onLog?.(`  ⚠ ${failedRanges.length} block ranges failed (results may be incomplete)`);
   }
 
-  onLog?.(`  ${chunks.length} chunks × ${chunkSize} blocks`);
-
-  const tasks = chunks.map((chunk) => async () => {
-    return runWithRetry(
-      () => factory.queryFilter(filter, chunk.start, chunk.end),
-      { retries: 3, baseDelay: 400 },
-    );
-  });
-
-  // Bounded concurrency. The multi-RPC router in src/services/rpc/ spreads
-  // these across ~14 public providers, each with maxConcurrent ≈ 4.
-  // 20 in-flight is comfortable and gives ~200ms/chunk throughput.
-  const results = await runPool(tasks, {
-    concurrency: 20,
-    onProgress: (done, total) => {
-      if (done % 50 === 0 || done === total) {
-        onLog?.(`    chunks ${done}/${total}`);
-      }
-    },
-  });
-
+  // Decode each log via the factory interface.
   const launches = [];
-  let failedChunks = 0;
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    if (!r.ok) {
-      failedChunks++;
-      continue;
-    }
-    for (const log of r.result) {
-      const args = log.args || {};
+  for (const raw of logs) {
+    try {
+      const parsed = iface.parseLog({ topics: raw.topics, data: raw.data });
+      if (!parsed || parsed.name !== 'TokenCreated') continue;
+      const args = parsed.args;
       launches.push({
         tokenAddress: args.tokenAddress,
         tokenAdmin: args.tokenAdmin,
         name: args.tokenName || '',
         symbol: args.tokenSymbol || '',
-        launchBlock: log.blockNumber,
-        txHash: log.transactionHash,
+        launchBlock: parseInt(raw.blockNumber, 16),
+        txHash: raw.transactionHash,
       });
+    } catch {
+      /* skip logs we can't decode — likely from a different event shape */
     }
-  }
-
-  if (failedChunks > 0) {
-    onLog?.(`  ⚠ ${failedChunks}/${chunks.length} chunks failed (RPC limits)`);
   }
 
   return launches;
@@ -130,15 +115,15 @@ export async function discoverLaunches(walletAddress, options = {}) {
     const cfg = CLANKER[version];
     if (!cfg || !cfg.factory) continue;
 
-    const abi = version === 'v4' ? CLANKER_V4_FACTORY_ABI : CLANKER_V3_FACTORY_ABI;
-    const factory = new ethers.Contract(cfg.factory, abi, provider);
+    const iface = version === 'v4' ? v4FactoryIface : v3FactoryIface;
     const startBlock = deepScan && cfg.deepStartBlock ? cfg.deepStartBlock : cfg.startBlock;
 
     onLog(`[${version}] scanning ${cfg.factory}`);
     onLog(`  range: ${startBlock} → ${latestBlock}`);
 
     const launches = await scanFactoryForAdmin(
-      factory,
+      cfg.factory,
+      iface,
       walletAddress,
       startBlock,
       latestBlock,

@@ -1,41 +1,58 @@
 // src/services/rpc/providers.js
-// Curated list of Base mainnet public RPC endpoints. Adapted from the RPCagg
-// project's tier-1 and tier-2 nodes. Removed all endpoints that require API
-// keys or have known authentication issues.
+// Curated list of Base mainnet public RPC endpoints.
+//
+// This list is CALIBRATED against real eth_getLogs workloads (the scanner's
+// hot path). Run `node test/bench-providers.mjs` to re-verify before adding
+// or removing any entry.
+//
+// Why this list is small (4 entries):
+//   Most public Base RPCs choke on 9999-block eth_getLogs calls:
+//     - blockpi: 5000 block max
+//     - nodies-public: 500 block max
+//     - thirdweb: 1000 block max
+//     - meowrpc: doesn't support eth_getLogs at all
+//     - publicnode: frequent timeouts
+//     - drpc/blast-api: HTTP 500/400 errors under load
+//   Rather than bloat the list with providers that fail half the time, we
+//   keep only the ones that handle our actual workload reliably.
 //
 // Weighting: higher `weight` = preferred by fastest-first strategies.
-// maxConcurrent: soft cap on in-flight requests per provider. Public endpoints
-// throttle aggressively; stay conservative.
+// maxConcurrent: calibrated against observed behavior. Don't raise without
+// re-benchmarking.
 //
 // Adding a new provider? Rules:
-//   1. Must be a real public endpoint (no API key required).
+//   1. Must pass test/bench-providers.mjs at 100% success rate.
 //   2. Must be HTTPS.
 //   3. Must respond to eth_chainId with 8453.
-//   4. Start with maxConcurrent: 4 until you've verified it handles more.
+//   4. Must support 9999-block eth_getLogs.
 
 export const BASE_CHAIN_ID = 8453;
 
 export const BASE_PROVIDERS = [
-  // ===== Tier 1 — reliable, proven under load =====
-  { name: 'base-official',   url: 'https://mainnet.base.org',                    weight: 10, maxConcurrent: 4 },
-  { name: 'base-developer',  url: 'https://developer-access-mainnet.base.org',   weight: 9,  maxConcurrent: 4 },
-  { name: 'publicnode',      url: 'https://base-rpc.publicnode.com',             weight: 8,  maxConcurrent: 4 },
-  { name: 'blast-api',       url: 'https://base-mainnet.public.blastapi.io',     weight: 8,  maxConcurrent: 4 },
-  { name: 'llamanodes',      url: 'https://base.llamarpc.com',                   weight: 8,  maxConcurrent: 4 },
-  { name: 'drpc',            url: 'https://base.drpc.org',                       weight: 7,  maxConcurrent: 4 },
-  { name: 'tenderly-public', url: 'https://gateway.tenderly.co/public/base',     weight: 8,  maxConcurrent: 4 },
-
-  // ===== Tier 2 — good, moderate limits =====
-  { name: 'blockpi',         url: 'https://base.public.blockpi.network/v1/rpc/public', weight: 7, maxConcurrent: 3 },
-  { name: '1rpc',            url: 'https://1rpc.io/base',                        weight: 6,  maxConcurrent: 3 },
-  { name: 'meowrpc',         url: 'https://base.meowrpc.com',                    weight: 6,  maxConcurrent: 3 },
-  { name: 'merkle',          url: 'https://base.merkle.io',                      weight: 6,  maxConcurrent: 3 },
-  { name: 'nodies-public',   url: 'https://base-public.nodies.app',              weight: 6,  maxConcurrent: 3 },
-
-  // ===== Tier 3 — backup =====
-  { name: 'publicnode-alt',  url: 'https://base.publicnode.com',                 weight: 5,  maxConcurrent: 3 },
-  { name: 'thirdweb',        url: 'https://base.rpc.thirdweb.com',               weight: 5,  maxConcurrent: 3 },
+  // ===== General-purpose providers (all methods, including 10k getLogs) =====
+  // Sorted by observed latency (lowest first) when all are healthy.
+  //
+  // maxLogBlockRange: largest block window this provider will accept for
+  // eth_getLogs. Calibrated via test/bench-chunk-sizes.mjs (April 2026).
+  //
+  //   - tenderly-public:  500k works, but slows at 500k. Sweet spot: 200k.
+  //   - merkle:           500k in <3s. Use up to 500k.
+  //   - base-official:    10k max (HTTP 413 above that).
+  //   - base-developer:   10k max (HTTP 413 above that).
+  { name: 'tenderly-public', url: 'https://gateway.tenderly.co/public/base',    weight: 10, maxConcurrent: 15, maxLogBlockRange: 200_000 },
+  { name: 'merkle',          url: 'https://base.merkle.io',                    weight: 10, maxConcurrent: 10, maxLogBlockRange: 500_000 },
+  { name: 'base-developer',  url: 'https://developer-access-mainnet.base.org', weight: 7,  maxConcurrent: 15, maxLogBlockRange: 10_000  },
+  { name: 'base-official',   url: 'https://mainnet.base.org',                  weight: 7,  maxConcurrent: 15, maxLogBlockRange: 10_000  },
 ];
+
+// Providers that support large (>= 100k block) eth_getLogs windows. Used by
+// the scanner's fast-path discovery loop to blow through multi-million-block
+// ranges in seconds instead of minutes.
+export const LARGE_RANGE_LOG_PROVIDERS = BASE_PROVIDERS.filter((p) => p.maxLogBlockRange >= 100_000);
+
+// Total theoretical in-flight capacity: sum of maxConcurrent across all
+// providers. Scanners should not exceed this.
+export const TOTAL_SLOT_CAPACITY = BASE_PROVIDERS.reduce((sum, p) => sum + p.maxConcurrent, 0);
 
 /**
  * Validate an RPC URL the user is trying to add. Blocks private ranges and
