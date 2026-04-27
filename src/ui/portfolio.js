@@ -13,6 +13,7 @@
 
 import { $, clear, show } from './dom.js';
 import { formatAmount } from '../utils/format.js';
+import { getWalletBalances } from '../services/balances/index.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -137,6 +138,31 @@ export function renderPortfolio(address, scans) {
   links.appendChild(link(`https://debank.com/profile/${address}`, 'DeBank'));
 
   show(dash, true);
+
+  // Async portfolio-value enrichment. Independent of the claim scan — runs
+  // after the dashboard is already visible so the user sees stats fast,
+  // then the value tile fills in.
+  enrichWithBalances(address).catch((e) => {
+    const sub = $('#stat-value-sub');
+    if (sub) sub.textContent = `error: ${e.message || 'failed'}`;
+  });
+}
+
+async function enrichWithBalances(address) {
+  const value = $('#stat-value');
+  const sub = $('#stat-value-sub');
+  if (!value || !sub) return;
+  value.textContent = '…';
+  sub.textContent = 'fetching balances…';
+  const result = await getWalletBalances(address, {
+    priceTokens: true,
+    onLog: (msg) => { sub.textContent = msg; },
+  });
+  const ethStr = Number(result.totalValueFormatted).toFixed(6);
+  value.textContent = `${ethStr} ETH`;
+  sub.textContent =
+    `${result.tokenCount} ERC-20 holdings, ${result.sellableTokenCount} priced sellable. ` +
+    `Native: ${Number(result.ethBalanceFormatted).toFixed(6)} ETH.`;
 }
 
 export function hidePortfolio() {

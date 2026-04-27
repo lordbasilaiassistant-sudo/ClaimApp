@@ -445,6 +445,8 @@ input[type="password"]:focus {
   gap: 12px;
   margin-bottom: 16px;
 }
+.portfolio-stats .stat-wide { grid-column: 1 / -1; }
+.portfolio-stats .stat-sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 .portfolio-stats .stat {
   padding: 12px;
   background: var(--bg);
