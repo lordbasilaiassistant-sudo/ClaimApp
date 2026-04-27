@@ -26,6 +26,9 @@ It's built modularly: each platform lives in its own folder under
 | **Clanker v4** | ✅ live | LP fees from every Clanker token you admin OR receive rewards from (dual-path discovery) |
 | **Clanker v2/v3/v3_1** | ✅ live (opt-in) | Legacy launches — claim via `factory.claimRewards(token)`. Enable via "Deep scan" (coming soon — see issue #9) |
 | **Bankr / Doppler V4** | ✅ live | Doppler V4 LP fees via the DECAY contract. Tracks per-pool pending amounts |
+| **Balance scanner** | ✅ live | Full ERC-20 holdings via BlockScout, dexscreener pre-filter, DEX-aggregator pricing through LiFi/Kyber/OpenOcean. Surfaces wallet ETH-equivalent value as a dashboard tile |
+| **Discovery analyzer** | ✅ live (CLI) | Mines tx-history to surface every contract a wallet deployed, every token it ever received, every counterparty, every NFT collection touched |
+| **Deployed-contract scanner** | ✅ live (CLI) | For each wallet-authored contract, pulls verified ABI from BlockScout and probes claim-shaped views (`claimable`, `pending`, `earned`, etc.) for non-zero balances. Catches custom contracts the targeted scanners miss. |
 | Zora    | 📋 planned ([#14](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/14)) | Creator and protocol rewards |
 | Uniswap V3/V4 arbitrary positions | 📋 planned ([#15](https://github.com/lordbasilaiassistant-sudo/ClaimApp/issues/15)) | Sweep uncollected LP fees from any position you own |
 | Merkle airdrops | 📋 planned | Multi-protocol merkle claimers |
@@ -163,14 +166,30 @@ ClaimApp/
 │   │       ├── scanner.js           # Release event + getPoolKey
 │   │       ├── claimer.js           # DECAY.collectFees
 │   │       └── index.js
+│   ├── services/
+│   │   ├── balances/                # ERC-20 holdings + DEX-priced value
+│   │   │   └── index.js             # getWalletBalances() — paginated, pre-filtered
+│   │   ├── dex/                     # DEX aggregator (browser-CORS-safe, no key)
+│   │   │   ├── index.js             # getBestQuote, isWorthSelling
+│   │   │   └── aggregators.js       # LiFi → Kyber → OpenOcean
+│   │   └── rpc/
+│   │       └── auto-prune.js        # Cross-run failure tracking, persistent disable
 │   ├── ui/
 │   │   ├── dom.js                   # Tiny DOM helpers (no framework)
+│   │   ├── portfolio.js             # Dashboard chart + value enrichment
 │   │   └── styles.css               # Dark theme, responsive
 │   ├── utils/
 │   │   └── format.js                # Display helpers
 │   └── vendor/
 │       ├── ethers.js                # Bundled ethers.js v6
 │       └── README.md
+├── scripts/                         # ◀── Node-only ops (gitignored output)
+│   ├── wallet-inventory.mjs         # Derive addresses from a local wallets JSON
+│   ├── portfolio-scan.mjs           # Multi-wallet read-only scan harness
+│   ├── basescan-history.mjs         # Full tx history via BlockScout
+│   ├── discover.mjs                 # Mine tx-history for deployments + counterparties
+│   ├── scan-deployments.mjs         # Probe wallet-authored contracts for claim shapes
+│   └── rpc-status.mjs               # Print RPC pool health + auto-prune state
 ├── test/
 │   ├── ping-router.mjs              # RPC sanity check
 │   ├── scan-treasury.mjs            # Full Clanker scan smoke test
@@ -179,6 +198,9 @@ ClaimApp/
 │   ├── bench-cors.mjs               # Browser CORS regression check
 │   ├── bench-providers.mjs          # Provider latency benchmark
 │   ├── bench-chunk-sizes.mjs        # Max eth_getLogs range per provider
+│   ├── bench-dex.mjs                # DEX aggregator smoke test
+│   ├── bench-balances.mjs           # Wallet balance + value smoke test
+│   ├── bench-zora.mjs               # ZORA ProtocolRewards balance probe
 │   └── serve.mjs                    # Zero-dep local static server
 ├── .github/
 │   ├── CODEOWNERS
