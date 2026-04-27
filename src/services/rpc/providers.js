@@ -15,26 +15,27 @@
 
 export const BASE_CHAIN_ID = 8453;
 
+// Bench results from test/bench-cors.mjs (2026-04-27, refresh after RPC research).
+// Every entry below was empirically verified for browser CORS + eth_getLogs.
+//
+// Tenderly remains primary because it's been most reliable in production.
+// Sentio is the strongest new addition: 200k-block eth_getLogs at ~1s,
+// faster than tenderly on the bench, gives us large-range redundancy.
 export const BASE_PROVIDERS = [
-  // ===== Large-range (200k+ block eth_getLogs) =====
-  // Tenderly's public gateway is currently the ONLY public Base RPC that
-  // both (a) supports 200k-block eth_getLogs and (b) has browser-safe CORS.
-  // This is a single point of failure — if tenderly is down, scanning falls
-  // back to the 10k providers below (slower but functional).
-  // Lowered from 15 → 8: tenderly rate-limits aggressively. 8 concurrent
-  // 200k-block eth_getLogs is the sweet spot between speed and 429 avoidance
-  // (verified empirically by stress-testing the treasury scan).
+  // ===== Large-range (200k-block eth_getLogs) =====
   { name: 'tenderly-public', url: 'https://gateway.tenderly.co/public/base',    weight: 10, maxConcurrent: 8,  maxLogBlockRange: 200_000 },
+  { name: 'sentio',          url: 'https://rpc.sentio.xyz/base',                weight: 9,  maxConcurrent: 6,  maxLogBlockRange: 200_000 },
+  // sequence supports 200k but ~12s latency on bench → keep at 10k tier instead
 
   // ===== 10k-range fallback (CORS-verified) =====
-  // These cap at ~10k block eth_getLogs windows. Used for:
-  //   1. General RPC calls (eth_call, eth_blockNumber, balance reads)
-  //   2. Fallback when tenderly fails a large-range chunk
-  //      (we split the failed 200k range into 20 × 10k sub-chunks)
   { name: 'base-developer',  url: 'https://developer-access-mainnet.base.org', weight: 8, maxConcurrent: 15, maxLogBlockRange: 9_999 },
   { name: 'base-official',   url: 'https://mainnet.base.org',                  weight: 7, maxConcurrent: 15, maxLogBlockRange: 9_999 },
   { name: 'sequence',        url: 'https://nodes.sequence.app/base',           weight: 6, maxConcurrent: 8,  maxLogBlockRange: 9_999 },
-  { name: '1rpc',            url: 'https://1rpc.io/base',                      weight: 5, maxConcurrent: 6,  maxLogBlockRange: 9_999 },
+  { name: 'subquery-public', url: 'https://base.rpc.subquery.network/public',  weight: 6, maxConcurrent: 6,  maxLogBlockRange: 9_999 },
+  { name: 'pocket',          url: 'https://base.api.pocket.network',           weight: 5, maxConcurrent: 6,  maxLogBlockRange: 9_999 },
+  { name: 'publicnode',      url: 'https://base.publicnode.com',               weight: 5, maxConcurrent: 6,  maxLogBlockRange: 9_999 },
+  { name: '1rpc',            url: 'https://1rpc.io/base',                      weight: 4, maxConcurrent: 6,  maxLogBlockRange: 9_999 },
+  { name: 'bloxroute',       url: 'https://base.rpc.blxrbdn.com',              weight: 3, maxConcurrent: 4,  maxLogBlockRange: 9_999 }, // slow (~10s)
 ];
 
 // Providers that support large (>= 100k block) eth_getLogs windows.

@@ -16,6 +16,7 @@
 
 import { BASE_PROVIDERS, BASE_CHAIN_ID } from './providers.js';
 import { ProviderHealth } from './health.js';
+import * as autoPrune from './auto-prune.js';
 
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_RETRIES = 4;
@@ -31,8 +32,11 @@ const PERMANENT_ERROR_PATTERNS = [
 
 export class RpcRouter {
   constructor(providers = BASE_PROVIDERS) {
-    this.providers = providers;
-    this.health = new ProviderHealth(providers);
+    // Drop providers that have failed in 2+ separate runs (auto-prune).
+    // Permanent — to recover a provider, call autoPrune.reset() or edit
+    // the persisted state file.
+    this.providers = autoPrune.filterActive(providers);
+    this.health = new ProviderHealth(this.providers);
     this.chainId = BASE_CHAIN_ID;
     this.stats = { total: 0, success: 0, errors: 0, retries: 0, rateLimits: 0 };
   }
@@ -156,7 +160,11 @@ export class RpcRouter {
       const json = await res.json();
       const latency = Date.now() - start;
       this.health.recordSuccess(provider.name, latency);
+      autoPrune.recordSuccess(provider.name);
       return json;
+    } catch (err) {
+      autoPrune.recordFailure(provider.name);
+      throw err;
     } finally {
       clearTimeout(timeout);
     }

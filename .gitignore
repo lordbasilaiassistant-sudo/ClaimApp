@@ -84,7 +84,12 @@ temp/
 scan-results/
 claims-log/
 user-data/
+tx-history/
+basescan-export/
 *.claims.json
+wallet-inventory.json
+rpc-state.json
+sell-decisions.json
 
 # ===== CLAUDE / AI TOOLING =====
 # Everything Claude-related stays local — never committed to a public repo

@@ -16,7 +16,7 @@
     style-src 'self' 'unsafe-inline';
     img-src 'self' data:;
     font-src 'self';
-    connect-src 'self' https://gateway.tenderly.co https://developer-access-mainnet.base.org https://mainnet.base.org https://nodes.sequence.app https://1rpc.io;
+    connect-src 'self' https://gateway.tenderly.co https://rpc.sentio.xyz https://developer-access-mainnet.base.org https://mainnet.base.org https://nodes.sequence.app https://base.rpc.subquery.network https://base.api.pocket.network https://base.publicnode.com https://1rpc.io https://base.rpc.blxrbdn.com https://li.quest https://aggregator-api.kyberswap.com https://open-api.openocean.finance;
     form-action 'none';
     base-uri 'none';
     frame-ancestors 'none';
@@ -155,6 +155,33 @@
         <h2>3. Your claimables</h2>
         <p class="muted" id="results-summary"></p>
       </header>
+
+      <!-- Portfolio dashboard: appears after a successful scan. Pure SVG, no
+           charting libraries, CSP-clean. Click-through to BaseScan + BlockScout. -->
+      <div class="portfolio-dashboard" id="portfolio-dashboard" hidden>
+        <div class="portfolio-stats">
+          <div class="stat">
+            <div class="stat-label">Tokens found</div>
+            <div class="stat-value" id="stat-found">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">With claimable</div>
+            <div class="stat-value" id="stat-claimable">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">WETH total</div>
+            <div class="stat-value" id="stat-weth">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Sources</div>
+            <div class="stat-value" id="stat-sources">0</div>
+          </div>
+        </div>
+
+        <svg class="portfolio-chart" id="portfolio-chart" viewBox="0 0 600 140" preserveAspectRatio="none" aria-label="Portfolio chart"></svg>
+
+        <div class="portfolio-links" id="portfolio-links"></div>
+      </div>
 
       <div class="weth-card" id="weth-card" hidden>
         <div>

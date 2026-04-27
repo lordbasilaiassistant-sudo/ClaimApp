@@ -431,6 +431,72 @@ input[type="password"]:focus {
   color: var(--info);
 }
 
+/* ===== Portfolio dashboard ===== */
+.portfolio-dashboard {
+  margin-bottom: 18px;
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(126, 231, 135, 0.04), rgba(107, 182, 255, 0.02));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.portfolio-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.portfolio-stats .stat {
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+.portfolio-stats .stat-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.portfolio-stats .stat-value {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.portfolio-chart {
+  width: 100%;
+  height: 140px;
+  display: block;
+  margin-bottom: 12px;
+}
+.portfolio-chart .bar-claim { fill: var(--success); }
+.portfolio-chart .bar-other { fill: var(--info); opacity: 0.4; }
+.portfolio-chart .axis-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: var(--text-dim);
+}
+.portfolio-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.portfolio-links a {
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  text-decoration: none;
+}
+.portfolio-links a:hover { border-color: var(--info); color: var(--info); }
+@media (max-width: 600px) {
+  .portfolio-stats { grid-template-columns: repeat(2, 1fr); }
+}
+
 /* ===== Token list ===== */
 .token-list { display: flex; flex-direction: column; gap: 8px; }
 .token-row {

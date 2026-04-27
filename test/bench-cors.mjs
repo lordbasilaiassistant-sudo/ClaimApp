@@ -7,26 +7,35 @@
 // BEFORE the request is sent.
 
 const CANDIDATES = [
-  // Currently configured
+  // ===== Currently active (in src/services/rpc/providers.js) =====
   { name: 'tenderly-public', url: 'https://gateway.tenderly.co/public/base' },
-  { name: 'merkle',          url: 'https://base.merkle.io' },
   { name: 'base-developer',  url: 'https://developer-access-mainnet.base.org' },
   { name: 'base-official',   url: 'https://mainnet.base.org' },
-  // Previously dropped but worth re-checking for CORS
+  { name: 'sequence',        url: 'https://nodes.sequence.app/base' },
+  { name: '1rpc',            url: 'https://1rpc.io/base' },
+
+  // ===== Known to fail CORS (kept here as regression guards) =====
+  { name: 'merkle',          url: 'https://base.merkle.io' }, // 405 on preflight
+
+  // ===== Candidates from 2026-04-27 RPC research pass =====
+  { name: 'llamarpc',        url: 'https://base.llamarpc.com' },
+  { name: 'blockpi-public',  url: 'https://base.public.blockpi.network/v1/rpc/public' },
+  { name: 'nodies-public',   url: 'https://base-public.nodies.app' },
+  { name: 'meowrpc',         url: 'https://base.meowrpc.com' },
+  { name: 'blast-api',       url: 'https://base-mainnet.public.blastapi.io' },
+  { name: 'drpc',            url: 'https://base.drpc.org' },
+  { name: 'lava',            url: 'https://base.lava.build' },
+  { name: 'subquery-public', url: 'https://base.rpc.subquery.network/public' },
+  { name: 'subquery-gw',     url: 'https://gateway.subquery.network/rpc/base' },
+  { name: 'tatum',           url: 'https://base-mainnet.gateway.tatum.io' },
+  { name: 'bloxroute',       url: 'https://base.rpc.blxrbdn.com' },
+  { name: 'pocket',          url: 'https://base.api.pocket.network' },
+  { name: 'sentio',          url: 'https://rpc.sentio.xyz/base' },
+  { name: 'thirdweb-named',  url: 'https://base.rpc.thirdweb.com' },
+  { name: 'thirdweb-id',     url: 'https://8453.rpc.thirdweb.com' },
+  { name: 'zan',             url: 'https://api.zan.top/base-mainnet' },
   { name: 'publicnode',      url: 'https://base-rpc.publicnode.com' },
   { name: 'publicnode-alt',  url: 'https://base.publicnode.com' },
-  { name: 'llamanodes',      url: 'https://base.llamarpc.com' },
-  { name: 'drpc',            url: 'https://base.drpc.org' },
-  { name: 'blast-api',       url: 'https://base-mainnet.public.blastapi.io' },
-  { name: '1rpc',            url: 'https://1rpc.io/base' },
-  { name: 'meowrpc',         url: 'https://base.meowrpc.com' },
-  { name: 'blockpi',         url: 'https://base.public.blockpi.network/v1/rpc/public' },
-  { name: 'nodies-public',   url: 'https://base-public.nodies.app' },
-  { name: 'thirdweb',        url: 'https://base.rpc.thirdweb.com' },
-  // New candidates
-  { name: 'cloudflare',      url: 'https://cloudflare-eth.com' }, // not base but included for protocol check
-  { name: 'base-ankr',       url: 'https://rpc.ankr.com/base' },
-  { name: 'sequence',        url: 'https://nodes.sequence.app/base' },
   { name: 'onfinality',      url: 'https://base.api.onfinality.io/public' },
 ];
 

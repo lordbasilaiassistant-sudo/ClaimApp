@@ -28,6 +28,7 @@ import {
   basescanTokenUrl,
 } from './utils/format.js';
 import { $, el, clear, show } from './ui/dom.js';
+import { renderPortfolio, hidePortfolio } from './ui/portfolio.js';
 
 // ===== Tab switching =====
 function initTabs() {
@@ -210,6 +211,9 @@ function renderResults(scans, fromCache = false) {
     `${claimableCount} with claimable balances.` +
     (fromCache ? ' (cached)' : '')
   ));
+
+  // Portfolio dashboard with stat cards + per-source bar chart + basescan links.
+  renderPortfolio(getAddress(), scans);
 
   // Confidence-tiered warning (issue #6):
   //
@@ -641,6 +645,7 @@ onAddressChange((addr) => {
   show($('#scan-card'), !!addr);
   if (!addr) {
     show($('#results-card'), false);
+    hidePortfolio();
   }
 });
 
